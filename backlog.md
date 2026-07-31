@@ -1,0 +1,1 @@
+- [refoulé par spar1] rendre la liste KNOWN_EXTS extensible/configurable (question À TRANCHER §79) — hors intention du cycle : la Destination est de GRAVER le contrat existant v4.0.0 'Définitif' et le rendre testable (§7), pas d'ajouter une feature. À reverser si un cycle 'extension' est ouvert.

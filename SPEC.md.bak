@@ -1,0 +1,81 @@
+# SPEC — corriger-extensions
+
+> **Règle d'or — rien ne s'affirme sans sa preuve.** Chaque preuve est un fait vérifiable et falsifiable.
+
+---
+
+## 1. Description globale — ce que fait le code
+
+Corrige le **NOM** des fichiers dont l'extension est **dupliquée** et/ou en **majuscules**, cassée par de mauvais transferts : `photo.JPG.JPG → photo.jpg`, `clip.MP4.MP4.MP4 → clip.mp4`. Il ne fait QUE ça : pure lecture des noms + renommage. Il ne lit **jamais** le contenu, ne déplace rien, ne supprime rien, ne vérifie pas si l'extension « correspond » au format réel.
+
+Pour qui : moi, pour assainir des archives photo/vidéo après transferts foireux, **sans le moindre risque pour les données ni les dates**. État actuel : v4.0.0, marqué « Définitif », licence MIT.
+
+**Domaines sensibles** : **fichiers** (entrées de répertoire, inode, collisions de noms, casse de système de fichiers insensible à la casse comme APFS par défaut).
+
+## 2. Fonctionnalités attendues + preuves
+
+### Fusion d'extensions dupliquées identiques
+- **Quoi** — `photo.jpg.jpg → photo.jpg`, `clip.mp4.mp4.mp4 → clip.mp4` (N occurrences identiques → 1).
+- **Preuve** — entrée `x.jpg.jpg` → sortie `x.jpg`. Deux extensions **différentes** (`photo.jpg.png`) sont laissées **intactes** (on ne devine pas laquelle garder).
+
+### Mise en minuscules des extensions connues uniquement
+- **Quoi** — `PHOTO.JPG → photo.jpg`, mais une extension inconnue (`Notes.IMPORTANT`) n'est pas touchée.
+- **Preuve** — `a.JPG` → `a.jpg` ; `Notes.IMPORTANT` inchangé. Le renommage de casse pure se fait en **deux temps** (via nom temporaire) avec **retour arrière automatique** si la 2ᵉ étape échoue (FS insensible à la casse).
+
+### Intégrité totale des données et dates
+- **Quoi** — renommer = modifier l'entrée de répertoire, pas le fichier.
+- **Preuve** — après renommage : octets de données identiques (hash inchangé), mtime inchangé, birthtime inchangé, xattr (tags Finder) inchangés. Seul le `ctime` (« Attributs modifiés », non affiché par le Finder) change — attendu et sans rapport avec les dates EXIF.
+
+### Pipeline SCAN → APERÇU → CONFIRMATION → APPLICATION
+- **Quoi** — liste figée à l'étape SCAN ; aperçu + journal écrits AVANT toute écriture ; confirmation o/N (défaut NON) ; application n'agit QUE sur la liste figée.
+- **Preuve** — « ce que tu vois (aperçu/journal) est exactement ce qui sera fait » : la liste appliquée == la liste figée. Confirmation vide/autre touche → aucune écriture (`--dry-run` n'applique rien).
+
+### Re-vérification d'identité avant chaque renommage
+- **Quoi** — juste avant de renommer, re-vérifier que la source est le même fichier (identité par **inode**) et que la cible **n'existe pas**.
+- **Preuve** — si la cible existe déjà → suffixe `_2`, `_3`… ; **jamais** d'écrasement d'un fichier existant. Si l'inode source a changé entre SCAN et APPLICATION → abstention sur ce fichier.
+
+## 3. Interdictions & limites + preuves
+
+- **Ne jamais ouvrir/lire le contenu** — preuve : aucune ouverture de fichier en lecture de données dans l'exécution (pur `os`/`pathlib` sur les noms).
+- **Ne jamais écraser un fichier existant** — preuve : §2, conflit → suffixe incrémental.
+- **Ne jamais renommer un dossier** — preuve : seuls des fichiers sont renommés ; un dossier `x.JPG/` est ignoré.
+- **Refus des zones système** — preuve : refus de tourner sur `/`, `/System`, `/Library`, `/usr`… ; ne descend pas dans les paquets macOS (`.app`, `.photoslibrary`, `.pages`), ni `Library`, ni les corbeilles ; ignore les liens symboliques (fichiers et dossiers).
+- **Fusion seulement si extensions identiques** — preuve : `photo.jpg.png` intact.
+- **Journal écrit hors du disque scanné** (dossier courant) — preuve : aucun fichier ajouté sur le volume cible.
+
+## 4. Risques d'interaction + preuves
+
+- **Liste figée (SCAN) ↔ application** — un fichier renommé/supprimé/remplacé entre SCAN et APPLICATION ne doit pas être renommé sur la foi de l'ancienne liste : l'identité par inode bloque l'action (sinon on renomme le mauvais fichier).
+- **Mise en minuscules ↔ FS insensible à la casse** — `PHOTO.JPG → photo.jpg` sur APFS (insensible mais préservant la casse) ne doit pas se voir refuser comme « cible déjà existante » : d'où le renommage en deux temps + rollback.
+- **Suffixe anti-collision ↔ idempotence** — relancer l'outil sur un dossier déjà corrigé ne doit créer aucun `_2` parasite (rien à faire = rien fait).
+
+## 5. Tests de robustesse
+
+- Idempotence : 2ᵉ passage = 0 renommage.
+- Entrées exotiques (classe) : noms Unicode, espaces, points multiples (`a.b.c.JPG.JPG`), fichiers sans extension, extensions très longues — aucun crash ; seuls les cas ciblés sont modifiés.
+- Jamais de perte : sur un grand dossier, le nombre de fichiers avant == après (renommage, pas suppression) ; aucun octet de donnée modifié.
+- Sécurité de chemin : un argument pointant vers une zone interdite → refus net, aucune action.
+- Rollback : simuler l'échec de la 2ᵉ étape du renommage de casse → l'état initial est restauré.
+
+## 6. Livrables attendus
+
+- Script `corriger_extensions.py` exécutable, options `--dry-run`, `--tout` (afficher toute la liste), `--oui` (non interactif). (déjà présentes)
+- README : ce que ça fait / ne fait PAS, la garantie d'intégrité, les filets de sécurité, l'emplacement du journal.
+- Conserver la licence MIT et la mention de version/état.
+
+## 7. Ce que je fournis _(facultatif)_
+
+- Le code est marqué « Définitif v4.0.0 » : le SPEC sert surtout à **graver le contrat existant** et à le rendre testable, pas à étendre.
+- Donnée réelle utile : un dossier-jouet reproduisant mes cas réels (`.JPG.JPG`, `.MP4.MP4.MP4`, `photo.jpg.png`, `Notes.IMPORTANT`, un nom avec inode partagé/lien dur).
+
+### Décision build/buy (scout)
+
+**Construire — verdict net.** La transformation nom→nom est banale (zmv en 1 ligne, Perl `rename`, NameChanger GUI), mais **100 % de la valeur est l'enveloppe de sûreté** (re-vérif inode · refus zones/paquets macOS · rollback de casse sur FS insensible · journal hors volume · fusion conditionnée · idempotence). **Aucun outil ne fournit ne serait-ce que 2 des 6 invariants** ; certains les **violent** (util-linux `rename` écrase ; Perl `rename`/`detox` trébuchent sur le pli de casse APFS). Recommandation scout : ajouter au README une section « Pourquoi pas `rename`/`zmv` ? » et **recentrer la Description sur « renommage à intégrité garantie »**. Confirme : figer v4.0.0 sans ajouter de feature est défendable.
+
+---
+
+## ⚠ À TRANCHER — je vide cette section avant de lancer
+
+- La liste des extensions « connues » à mettre en minuscules : figée où, et faut-il pouvoir l'étendre ?
+- Comportement souhaité sur `a.JPG.jpg` (même extension, casse différente) : fusionner en `a.jpg` ou laisser ?
+- Le projet étant « Définitif », accepte-t-on que le SPEC fige sans rien ajouter (zéro feature) ?
