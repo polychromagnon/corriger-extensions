@@ -62,6 +62,18 @@ python3 -m venv .venv
 .venv/bin/python -m pytest -q test_corriger_extensions.py
 ```
 
+## Mutation (Linux)
+
+Pour vérifier que les tests attrapent une erreur introduite dans le code, l'outil mutmut modifie le script de mille façons et relance la suite à chaque fois. Configuration dans `setup.cfg` :
+
+```
+.venv/bin/python -m pip install mutmut
+.venv/bin/mutmut run
+.venv/bin/mutmut results
+```
+
+mutmut ne voit pas les tests qui lancent un second processus (arrêt par signal) : les mutants qu'eux seuls tuent apparaissent survivants et se vérifient un par un avec `MUTANT_UNDER_TEST=<nom> python -m pytest` dans le dossier `mutants/`.
+
 ## Vérification sur ton Mac
 
 Ce que la suite Linux ne peut pas prouver (date de création, tags Finder, renommage de casse sur APFS, appel système macOS), cet essai le montre sur un dossier jetable. Depuis le dossier du projet, dans le Terminal :

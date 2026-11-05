@@ -1866,3 +1866,12 @@ def test_temp_deja_pris_reste_dans_le_dossier(tmp_path, monkeypatch):
     monkeypatch.setattr(corr, "_rename_no_overwrite", espion)
     corr.appliquer([forge(src, "a.jpg", True, tmp_path)])
     assert vus[0] == str(tmp_path / f"{corr.PREFIXE_TMP}a_2.jpg")
+
+
+def test_compagnon_lightroom_radical_a_points(tmp_path):
+    for n in ["x.2024.JPG", "x.2024.xmp", "y.2024.JPG.JPG", "y.2024.JPG.xmp"]:
+        touch(tmp_path / n)
+    laisses = []
+    modifs = corr.scanner(tmp_path, laisses)[0]
+    assert corr.compagnons(modifs, laisses) == [
+        ("y.2024.JPG.xmp", "y.2024.JPG.JPG", "compagnon Lightroom (même radical)")]
