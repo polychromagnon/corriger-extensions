@@ -239,6 +239,53 @@ def test_dry_run_naplique_rien(tmp_path, monkeypatch, capsys):
     assert "aucune modification" in capsys.readouterr().out.lower()
 
 
+class _StdinTTY:
+    def isatty(self):
+        return True
+
+
+@pytest.mark.parametrize("reponse,renomme", [
+    ("", False), ("x", False), ("n", False), ("non", False), ("o", True), ("oui", True),
+])
+def test_confirmation_defaut_non(tmp_path, monkeypatch, reponse, renomme):
+    touch(tmp_path / "a.JPG.JPG")
+    monkeypatch.setattr(corr, "choisir_journal", lambda racine: (None, False))
+    monkeypatch.setattr("sys.argv", ["prog", str(tmp_path)])
+    monkeypatch.setattr("sys.stdin", _StdinTTY())
+    monkeypatch.setattr("builtins.input", lambda invite="": reponse)
+    corr.main()
+    assert noms(tmp_path) == (["a.jpg"] if renomme else ["a.JPG.JPG"])
+
+
+def test_contenu_jamais_ouvert(tmp_path, monkeypatch):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    for nom in ["a.JPG.JPG", "b.ZIP.ZIP", "c.XLSX", "d.jpg", "x.FOO.FOO"]:
+        touch(racine / nom)
+    journal = tmp_path / "rename_log_test.txt"
+    ouverts = []
+    vrai_open, vrai_os_open = open, os.open
+
+    def espion_open(f, *a, **k):
+        ouverts.append(os.path.abspath(os.fsdecode(f)) if not isinstance(f, int) else f)
+        return vrai_open(f, *a, **k)
+
+    def espion_os_open(f, *a, **k):
+        ouverts.append(os.path.abspath(os.fsdecode(f)))
+        return vrai_os_open(f, *a, **k)
+
+    monkeypatch.setattr("builtins.open", espion_open)
+    monkeypatch.setattr("io.open", espion_open)
+    monkeypatch.setattr("os.open", espion_os_open)
+    monkeypatch.setattr(corr, "choisir_journal", lambda r: (journal, False))
+    monkeypatch.setattr("sys.argv", ["prog", str(racine), "--oui"])
+    corr.main()
+    assert noms(racine) == sorted(["a.jpg", "b.zip", "c.xlsx", "d.jpg", "x.foo"])
+    assert str(journal) in ouverts                       # l'espion voit bien les ouvertures
+    sous_racine = [o for o in ouverts if isinstance(o, str) and o.startswith(str(racine) + os.sep)]
+    assert sous_racine == []
+
+
 # ---------------------------------------------------------------------------
 # §2/§3 — conflit avec un autre fichier → suffixe, jamais d'écrasement
 # ---------------------------------------------------------------------------
