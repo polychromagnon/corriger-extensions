@@ -2,15 +2,17 @@
 
 Corrige le **nom** des fichiers dont l'extension a été cassée par de mauvais transferts : extension dupliquée et/ou en majuscules. `photo.JPG.JPG` devient `photo.jpg`, `clip.MP4.MP4.MP4` devient `clip.mp4`.
 
-Version 4.1.0, état « Définitif — correctifs de sûreté ». Licence MIT.
+Version 4.2.0, état « Définitif — correctifs de sûreté ». Licence MIT.
 
 ## Ce que ça fait
 
-Une seule chose : lire les noms de fichiers d'une arborescence et renommer ceux dont l'extension est cassée. La correction couvre la fusion d'extensions empilées identiques (`photo.jpg.jpg` → `photo.jpg`, y compris le synonyme `jpeg` → `jpg` et la casse `a.JPG.jpg` → `a.jpg`) et la mise en minuscules d'une extension connue (`PHOTO.JPG` → `photo.jpg`).
+Une seule chose : lire les noms de fichiers d'une arborescence et renommer ceux dont l'extension est cassée. La correction couvre la fusion d'extensions empilées identiques (`photo.jpg.jpg` → `photo.jpg`, y compris le synonyme `jpeg` → `jpg` et la casse `a.JPG.jpg` → `a.jpg`) et la mise en minuscules d'une extension connue (`PHOTO.JPG` → `photo.jpg`). Une pile d'extensions toutes identiques est fusionnée et mise en minuscules quel que soit le type de fichier, même si l'extension est inconnue (`b.ZIP.ZIP` → `b.zip`, `x.FOO.FOO` → `x.foo`).
+
+Extensions connues (69) : photos et images (jpg, jpeg, png, gif, heic, heif, tiff, tif, bmp, webp, raw, cr2, nef, arw, dng, orf, rw2, srw, svg, psd, avif), vidéos (mp4, mov, avi, mkv, m4v, wmv, mpg, mpeg, 3gp, webm, flv, m2ts), audio (mp3, wav, flac, aac, m4a, ogg), documents et bureautique (pdf, doc, docx, txt, rtf, xls, xlsx, ppt, pptx, odt, ods, odp, pages, numbers, key, epub), archives (zip, rar, 7z, tar, gz, dmg, iso), web et données (html, htm, csv, json, xml, md), sidecar Apple Photos (aae).
 
 ## Ce que ça ne fait PAS
 
-Le contenu des fichiers n'est jamais ouvert ni lu. Rien n'est déplacé, rien n'est supprimé. L'outil ne vérifie pas si l'extension correspond au format réel du fichier. Deux extensions différentes empilées (`photo.jpg.png`) sont laissées intactes : on ne devine pas laquelle garder. Une extension inconnue (`Notes.IMPORTANT`) n'est pas touchée. Une pile où une partie intermédiaire n'est pas une extension connue (`IMG.2024.JPG.JPG`) n'est corrigée que sur la casse finale (`IMG.2024.JPG.jpg`) : le doublon survit, c'est une limite assumée.
+Le contenu des fichiers n'est jamais ouvert ni lu. Rien n'est déplacé, rien n'est supprimé. L'outil ne vérifie pas si l'extension correspond au format réel du fichier. Deux extensions différentes empilées (`photo.jpg.png`) sont laissées intactes : on ne devine pas laquelle garder. Une extension inconnue seule (`Notes.IMPORTANT`) n'est pas touchée. Un doublon fait uniquement de chiffres (`version.1.1`, `rapport.2024.2024`) n'est jamais fusionné, ni un doublon qui contient autre chose que des lettres ASCII et des chiffres (`x.été.été`, `x.final version.final version`). Une pile qui n'est pas entièrement identique et où une partie intermédiaire n'est pas une extension connue (`IMG.2024.JPG.JPG`) n'est corrigée que sur la casse finale (`IMG.2024.JPG.jpg`) : le doublon survit, c'est une limite assumée. Seule la dernière extension change de casse : `x.TAR.GZ` devient `x.TAR.gz`.
 
 ## Garantie d'intégrité des données et des dates
 

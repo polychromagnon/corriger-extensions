@@ -68,6 +68,93 @@ def test_nouveau_nom(entree, attendu):
 
 
 # ---------------------------------------------------------------------------
+# §2 — fusion des doublons identiques, toute extension (réponse PO 2026-11-05)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("entree,attendu", [
+    ("b.ZIP.ZIP", "b.zip"),
+    ("f.csv.csv", "f.csv"),
+    ("x.FOO.FOO", "x.foo"),                         # extension inconnue fusionnée
+    ("Notes.IMPORTANT.IMPORTANT", "Notes.important"),
+    ("a.Foo.FOO.foo", "a.foo"),                     # identiques à la casse près
+    ("son.M4A.M4A", "son.m4a"),                     # lettres et chiffres : fusionné
+    ("x.v2.V2", "x.v2"),
+    ("version.1.1", "version.1.1"),                 # chiffres seuls : jamais fusionné
+    ("rapport.2024.2024", "rapport.2024.2024"),
+    ("archive.001.001", "archive.001.001"),
+    ("a..", "a.."),                                 # parties vides
+    ("x.final version.final version", "x.final version.final version"),
+    ("x.été.été", "x.été.été"),                     # non ASCII
+    ("x.a-b.a-b", "x.a-b.a-b"),                     # ponctuation
+    ("IMG.2024.JPG.JPG", "IMG.2024.JPG.jpg"),       # pile non entièrement identique
+    ("a.tar.gz.gz", "a.tar.gz.gz"),
+    ("x.FOO", "x.FOO"),                             # casse seule hors liste : intact
+    ("Notes.IMPORTANT", "Notes.IMPORTANT"),
+    (".cache.cache", ".cache.cache"),               # nom caché
+])
+def test_fusion_toute_extension(entree, attendu):
+    assert corr.nouveau_nom(entree) == attendu
+
+
+NOUVELLES_EXTS = [
+    "zip", "rar", "7z", "tar", "gz", "dmg", "iso",
+    "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "pages", "numbers", "key", "epub",
+    "html", "htm", "csv", "json", "xml", "md",
+    "svg", "psd", "avif",
+]
+
+
+def test_liste_elargie_compte():
+    assert len(NOUVELLES_EXTS) == 27 and len(set(NOUVELLES_EXTS)) == 27
+    assert not set(NOUVELLES_EXTS) & ANCIENNES_EXTS
+    assert corr.KNOWN_EXTS == ANCIENNES_EXTS | set(NOUVELLES_EXTS)
+
+
+ANCIENNES_EXTS = {
+    "jpg", "jpeg", "png", "gif", "heic", "heif", "tiff", "tif",
+    "bmp", "webp", "raw", "cr2", "nef", "arw", "dng", "orf", "rw2", "srw",
+    "mp4", "mov", "avi", "mkv", "m4v", "wmv", "mpg", "mpeg",
+    "3gp", "webm", "flv", "m2ts",
+    "mp3", "wav", "flac", "aac", "m4a", "ogg",
+    "pdf", "doc", "docx", "txt", "rtf",
+    "aae",
+}
+
+
+@pytest.mark.parametrize("ext", NOUVELLES_EXTS)
+def test_liste_elargie_casse(ext):
+    assert corr.nouveau_nom(f"x.{ext.upper()}") == f"x.{ext}"
+
+
+def test_liste_elargie_casse_derniere_seule():
+    assert corr.nouveau_nom("c.XLSX") == "c.xlsx"
+    assert corr.nouveau_nom("x.TAR.GZ") == "x.TAR.gz"
+
+
+def test_fusion_toute_extension_bout_en_bout(tmp_path):
+    touch(tmp_path / "x.FOO.FOO", b"un")
+    touch(tmp_path / "y.FOO")
+    touch(tmp_path / "version.1.1")
+    (tmp_path / "album.FOO.FOO").mkdir()
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 1
+    assert noms(tmp_path) == sorted(["x.foo", "y.FOO", "version.1.1", "album.FOO.FOO"])
+    assert (tmp_path / "x.foo").read_bytes() == b"un"
+    assert (tmp_path / "album.FOO.FOO").is_dir()
+    assert scan_apply(tmp_path)["renommes"] == 0          # idempotence
+
+
+def test_fusion_toute_extension_conflit_suffixe(tmp_path):
+    touch(tmp_path / "x.foo.foo", b"un")
+    touch(tmp_path / "x.foo", b"deux")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 1
+    assert (tmp_path / "x.foo").read_bytes() == b"deux"   # jamais écrasé
+    assert (tmp_path / "x_2.foo").read_bytes() == b"un"
+    assert len(noms(tmp_path)) == 2
+
+
+# ---------------------------------------------------------------------------
 # §2 — fusion + casse de bout en bout
 # ---------------------------------------------------------------------------
 
@@ -326,7 +413,7 @@ def test_noms_exotiques_sans_crash(tmp_path):
     for nom in ["éclair.JPG.JPG", "deux mots.PNG", "a.b.c.JPG.JPG",
                 "sansext", "court.z", "long." + "x" * 40]:
         touch(tmp_path / nom)
-    r = scan_apply(tmp_path)                            # ne doit pas lever
+    scan_apply(tmp_path)                                # ne doit pas lever
     assert (tmp_path / "éclair.jpg").exists()
     assert (tmp_path / "deux mots.png").exists()
 

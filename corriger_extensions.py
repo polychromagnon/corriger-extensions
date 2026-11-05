@@ -40,7 +40,10 @@ FILETS DE SÉCURITÉ
     - Ne renomme jamais un dossier, seulement des fichiers.
     - Fusion d'extensions UNIQUEMENT si elles se réduisent à une seule forme
       (photo.jpg.jpg → photo.jpg). Deux extensions différentes (photo.jpg.png)
-      sont laissées intactes : on ne devine pas laquelle garder.
+      sont laissées intactes : on ne devine pas laquelle garder. Une pile
+      d'extensions toutes identiques est fusionnée même si l'extension est
+      inconnue (x.FOO.FOO → x.foo), sauf si elle n'est faite que de chiffres
+      (version.1.1 intact).
     - Ne met en minuscules que les extensions connues (Notes.IMPORTANT intact).
     - Conflit de nom avec un autre fichier → suffixe _2, _3… ; jamais d'écrasement.
     - Renommage de casse (PHOTO.JPG → photo.jpg) en deux temps, avec retour
@@ -59,7 +62,7 @@ USAGE
     python3 corriger_extensions.py "/Volumes/MonArchive" --tout      # affiche TOUTE la liste à l'écran
     python3 corriger_extensions.py "/Volumes/MonArchive" --oui       # non interactif : applique sans demander
 
-Version : 4.1.0 — 29/08/2026
+Version : 4.2.0 — 05/11/2026
 État : Définitif — correctifs de sûreté
 Licence : MIT
 """
@@ -82,8 +85,9 @@ from collections import namedtuple
 # ne change que l'étiquette du nom, jamais le contenu.) Mettre False pour garder .jpeg.
 NORMALISER_JPEG = True
 
-# Extensions reconnues. On ne « fusionne » des extensions empilées que si elles
-# sont toutes ici ET se réduisent à une seule forme. On ne met en minuscules QUE ces extensions.
+# Extensions reconnues. Une pile d'extensions mêlées n'est fusionnée que si elles
+# sont toutes ici ET se réduisent à une seule forme. On ne met en minuscules QUE ces
+# extensions (hors fusion d'une pile identique, voir _doublon_fusionnable).
 KNOWN_EXTS = {
     # Images
     "jpg", "jpeg", "png", "gif", "heic", "heif", "tiff", "tif",
@@ -97,6 +101,14 @@ KNOWN_EXTS = {
     "pdf", "doc", "docx", "txt", "rtf",
     # Sidecar Apple Photos
     "aae",
+    # Archives
+    "zip", "rar", "7z", "tar", "gz", "dmg", "iso",
+    # Bureautique
+    "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "pages", "numbers", "key", "epub",
+    # Web et données
+    "html", "htm", "csv", "json", "xml", "md",
+    # Images (suite)
+    "svg", "psd", "avif",
 }
 
 NORMALISATIONS = {"jpeg": "jpg"} if NORMALISER_JPEG else {}
@@ -234,10 +246,20 @@ def _rename_no_overwrite(src: str, dst: str) -> bool:
 # Calcul du nom propre (aucune lecture de contenu)
 # ----------------------------------------------------------------------------
 
+def _doublon_fusionnable(suffixes: list[str]) -> bool:
+    forme = suffixes[0].lower()
+    return (len(suffixes) > 1
+            and all(s.lower() == forme for s in suffixes)
+            and forme.isascii() and forme.isalnum()
+            and not forme.isdigit())
+
+
 def nouveau_nom(nom: str) -> str:
     """Nom corrigé pour un fichier, ou le nom inchangé s'il est déjà propre.
 
     - extensions empilées toutes connues et réductibles à une seule forme → fusion ;
+    - extensions empilées toutes identiques (casse ignorée), même inconnues → fusion,
+      sauf partie faite uniquement de chiffres (version.1.1) ou hors [A-Za-z0-9] ;
     - sinon, casse de la dernière extension normalisée SI elle est connue ;
     - si la dernière partie n'est pas une extension connue → rien n'est touché.
     """
@@ -259,6 +281,9 @@ def nouveau_nom(nom: str) -> str:
         formes = {NORMALISATIONS.get(s.lower(), s.lower()) for s in suffixes}
         if len(formes) == 1:        # duplication réductible à UNE forme → fusion
             return f"{parties[0]}.{derniere_norm}"
+
+    if _doublon_fusionnable(suffixes):
+        return f"{parties[0]}.{derniere.lower()}"
 
     if derniere_connue:             # on normalise juste la casse de l'extension finale
         return f"{'.'.join(parties[:-1])}.{derniere_norm}"
@@ -634,8 +659,8 @@ def afficher_apercu(racine, modifs, deja_ok, erreurs_acces, orphelins, journal, 
     if len(a_montrer) < len(modifs):
         reste = len(modifs) - len(a_montrer)
         print(f"  … +{reste} autre(s) non affichés ici.")
-        print(f"  Liste intégrale dans le journal ci-dessus (ouvre-le pour tout vérifier).")
-        print(f"  (Relance avec --tout pour tout afficher à l'écran.)")
+        print("  Liste intégrale dans le journal ci-dessus (ouvre-le pour tout vérifier).")
+        print("  (Relance avec --tout pour tout afficher à l'écran.)")
 
 
 def demander_confirmation(nb: int) -> bool:
