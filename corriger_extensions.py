@@ -313,6 +313,20 @@ def meme_fichier(a: Path, b: Path) -> bool:
         return False
 
 
+def _coupe_extension(nom: str) -> tuple:
+    """(base, extension) où le suffixe _2 s'insère : a.tar.gz → (a, .tar.gz), IMG.2024.jpg → (IMG.2024, .jpg).
+
+    L'extension est la dernière partie, plus les parties connues qui la précèdent.
+    """
+    parties = nom.split(".")
+    if len(parties) < 2 or parties[0] == "":
+        return nom, ""
+    debut = len(parties) - 1
+    while debut > 1 and parties[debut - 1].lower() in KNOWN_EXTS:
+        debut -= 1
+    return ".".join(parties[:debut]), "." + ".".join(parties[debut:])
+
+
 def _nom_libre(cible: Path, reserves: set) -> Path:
     """cible_2, cible_3… en évitant le disque ET les cibles déjà réservées.
 
@@ -324,7 +338,7 @@ def _nom_libre(cible: Path, reserves: set) -> Path:
 
     if not occupe(cible):
         return cible
-    parent, base, ext = cible.parent, cible.stem, cible.suffix
+    parent, (base, ext) = cible.parent, _coupe_extension(cible.name)
     n = 2
     while True:
         cand = parent / f"{base}_{n}{ext}"

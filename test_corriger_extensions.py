@@ -2146,3 +2146,43 @@ def test_ctrl_c_pendant_l_analyse(tmp_path, monkeypatch, capsys):
     assert _lancer_main(tmp_path, None, monkeypatch, "--oui") == 130
     assert capsys.readouterr().out.endswith("\n✋ Interrompu pendant l'analyse : rien n'a été modifié.\n")
     assert noms(tmp_path) == ["a.JPG.JPG"]
+
+
+# ---------------------------------------------------------------------------
+# Suffixe anti-collision placé avant l'extension composée (attaque 3, cycle 2)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("existant,a_corriger,attendu", [
+    ("a.tar.gz", "a.tar.gz.gz", "a_2.tar.gz"),
+    ("b.tar.bz2", "b.tar.BZ2.BZ2", "b_2.tar.bz2"),
+    ("IMG.2024.jpg", "IMG.2024.JPG.JPG", "IMG.2024_2.jpg"),
+    ("x.foo", "x.FOO.FOO", "x_2.foo"),
+    ("Scan 12.5.pdf", "Scan 12.5.PDF.PDF", "Scan 12.5_2.pdf"),
+])
+def test_suffixe_avant_l_extension_composee(tmp_path, existant, a_corriger, attendu):
+    touch(tmp_path / existant, b"existant")
+    touch(tmp_path / a_corriger, b"source")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 1
+    assert (tmp_path / existant).read_bytes() == b"existant"
+    assert (tmp_path / attendu).read_bytes() == b"source"
+
+
+def test_suffixe_evite_un_lien_casse(tmp_path):
+    touch(tmp_path / "a.jpg", b"un")
+    (tmp_path / "a_2.jpg").symlink_to(tmp_path / "nulle-part")
+    touch(tmp_path / "a.JPG.JPG", b"source")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 1
+    assert os.path.islink(tmp_path / "a_2.jpg")
+    assert (tmp_path / "a_3.jpg").read_bytes() == b"source"
+
+
+def test_repli_lien_casse_sur_la_cible_jamais_ecrase(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORREXT_FORCE_NON_ATOMIC", "1")
+    touch(tmp_path / "a.JPG.JPG", b"source")
+    modifs = corr.scanner(tmp_path)[0]
+    (tmp_path / "a.jpg").symlink_to(tmp_path / "nulle-part")
+    renommes, ignores, _, _ = corr.appliquer(modifs)
+    assert renommes == 0 and len(ignores) == 1
+    assert os.path.islink(tmp_path / "a.jpg") and (tmp_path / "a.JPG.JPG").read_bytes() == b"source"
