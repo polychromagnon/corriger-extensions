@@ -62,6 +62,12 @@ python3 -m venv .venv
 Ce que la suite Linux ne peut pas prouver (date de création, tags Finder, renommage de casse sur APFS, appel système macOS), cet essai le montre sur un dossier jetable. Depuis le dossier du projet, dans le Terminal :
 
 ```
+python3 --version
+```
+
+L'outil exige Python 3.9 ou plus récent.
+
+```
 mkdir ~/Desktop/essai-corrext
 touch ~/Desktop/essai-corrext/{photo.JPG.JPG,clip.MP4,b.ZIP.ZIP,c.XLSX,version.1.1,Notes.IMPORTANT}
 ```

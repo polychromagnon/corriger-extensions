@@ -984,3 +984,23 @@ def test_dossiers_illisibles_annonces(tmp_path, monkeypatch, capsys, fichiers, a
     fin = sortie.rsplit("Renommages prévus", 1)[-1]
     assert "1 dossier(s) n'ont pas pu être lus" in fin
     assert noms(tmp_path) == (["a.jpg"] if attendu_renommes else [])
+
+
+# ---------------------------------------------------------------------------
+# Nom mal encodé (octets non UTF-8) : affiché et journalisé échappé, renommé, aucun plantage
+# ---------------------------------------------------------------------------
+
+def test_nom_non_utf8(tmp_path, monkeypatch, capsys):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    fd = os.open(os.fsencode(racine) + b"/caf\xe9.JPG.JPG", os.O_CREAT | os.O_WRONLY, 0o644)
+    os.write(fd, b"photo")
+    os.close(fd)
+    touch(racine / "b.ZIP.ZIP")
+    journal = tmp_path / "rename_log_test.txt"
+    monkeypatch.setattr(corr, "choisir_journal", lambda r: (journal, False))
+    monkeypatch.setattr("sys.argv", ["prog", str(racine), "--oui"])
+    corr.main()
+    assert sorted(os.listdir(os.fsencode(racine))) == [b"b.zip", b"caf\xe9.jpg"]
+    assert "caf\\udce9.JPG.JPG" in capsys.readouterr().out
+    assert "caf\\udce9.JPG.JPG" in journal.read_text(encoding="utf-8")

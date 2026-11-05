@@ -649,7 +649,7 @@ def _inscriptible(cand: Path) -> bool:
 
 
 def ecrire_journal_prevu(journal: Path, racine, modifs, deja_ok, erreurs_acces, orphelins) -> None:
-    with journal.open("w", encoding="utf-8") as f:
+    with journal.open("w", encoding="utf-8", errors="backslashreplace") as f:
         f.write(f"Journal de nettoyage d'extensions — {datetime.now():%Y-%m-%d %H:%M:%S}\n")
         f.write(f"Racine : {racine}\n")
         f.write("État : LISTE PRÉVUE (rien n'a encore été renommé)\n")
@@ -672,7 +672,7 @@ def ecrire_journal_prevu(journal: Path, racine, modifs, deja_ok, erreurs_acces, 
 
 
 def ajouter_resultats(journal: Path, renommes, ignores, erreurs, repli, interruption=None) -> None:
-    with journal.open("a", encoding="utf-8") as f:
+    with journal.open("a", encoding="utf-8", errors="backslashreplace") as f:
         f.write("\n\n" + "=" * 78 + "\n")
         f.write(f"RÉSULTATS — {datetime.now():%Y-%m-%d %H:%M:%S}\n")
         f.write("=" * 78 + "\n")
@@ -749,6 +749,13 @@ def demander_confirmation(nb: int) -> bool:
 # ----------------------------------------------------------------------------
 
 def main() -> None:
+    # Un nom mal encodé (transfert depuis Windows ou Linux) s'affiche échappé au lieu
+    # de faire planter l'aperçu.
+    for flux in (sys.stdout, sys.stderr):
+        try:
+            flux.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
     dry_run = False
     tout = False
     auto_oui = False
