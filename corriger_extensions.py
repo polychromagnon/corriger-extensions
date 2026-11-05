@@ -64,7 +64,7 @@ USAGE
     python3 corriger_extensions.py "/Volumes/MonArchive" --tout      # affiche TOUTE la liste à l'écran
     python3 corriger_extensions.py "/Volumes/MonArchive" --oui       # non interactif : applique sans demander
 
-Version : 4.2.0 — 05/11/2026
+Version : 5.0.0 — 05/11/2026
 État : Définitif — correctifs de sûreté
 Licence : MIT
 """
