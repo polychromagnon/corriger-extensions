@@ -13,9 +13,11 @@ GARANTIE D'INTÉGRITÉ
     Renommer = modifier une entrée de répertoire (le lien nom → fichier), pas le
     fichier. Les octets de données, le mtime (date de modification), le birthtime
     (date de création Finder) et les attributs étendus (tags Finder, etc.) ne
-    sont PAS touchés. Le seul horodatage que tout renommage POSIX met à jour est
-    le ctime (« Attributs modifiés ») : il n'est pas affiché par le Finder et n'a
-    aucun rapport avec tes dates EXIF (qui sont dans le contenu, jamais lu).
+    sont PAS touchés. Sur le fichier, le seul horodatage que tout renommage POSIX
+    met à jour est le ctime (« Attributs modifiés ») : il n'est pas affiché par le
+    Finder et n'a aucun rapport avec tes dates EXIF (qui sont dans le contenu,
+    jamais lu). Le DOSSIER qui contient un fichier renommé voit en revanche sa date
+    de modification passer à l'heure du renommage, comme pour tout renommage.
 
 DÉROULEMENT (en une seule commande)
     1. SCAN — parcourt l'arborescence en lisant uniquement les noms de fichiers,
@@ -119,6 +121,7 @@ EXT_DOSSIERS_OPAQUES = {
     ".app", ".bundle", ".framework", ".plugin", ".kext", ".prefpane",
     ".qlgenerator", ".mdimporter", ".component", ".scptd",
     ".photoslibrary", ".aplibrary", ".migratedaplibrary",
+    ".photolibrary", ".migratedphotolibrary",
     ".tvlibrary", ".theater", ".imovielibrary", ".fcpbundle",
     ".musiclibrary", ".band",
     ".pages", ".numbers", ".key", ".rtfd",
@@ -129,6 +132,8 @@ EXT_DOSSIERS_OPAQUES = {
 # Dossiers (par NOM) jamais parcourus. « Library » contient des données d'apps.
 # Édite cet ensemble si tu as un dossier de DONNÉES légitimement nommé « Library ».
 NOMS_DIR_IGNORES = {"Library", ".Trash", ".Trashes"}
+# Corbeille Windows (disques exFAT/NTFS partagés) ; Windows l'écrit avec des casses variables.
+NOMS_DIR_IGNORES_SANS_CASSE = {"$recycle.bin"}
 
 # Emplacements système où le script REFUSE de tourner.
 RACINES_INTERDITES = (
@@ -337,7 +342,8 @@ def est_racine_interdite(racine: Path) -> bool:
 
     La racine passée en argument subit les mêmes filtres que la descente : pointer
     directement sur un .photoslibrary ou ~/Library est refusé, pas seulement évité
-    en descendant.
+    en descendant. Un dossier situé DANS un paquet ou une corbeille l'est aussi
+    (Photos.photoslibrary/originals, ~/.Trash/x).
     """
     s = str(racine)
     if s == "/":
@@ -346,8 +352,11 @@ def est_racine_interdite(racine: Path) -> bool:
         return True
     if racine.name in NOMS_DIR_IGNORES:
         return True
-    if racine.suffix.lower() in EXT_DOSSIERS_OPAQUES:
-        return True
+    for partie in racine.parts:
+        if Path(partie).suffix.lower() in EXT_DOSSIERS_OPAQUES \
+           or partie in (".Trash", ".Trashes") \
+           or partie.lower() in NOMS_DIR_IGNORES_SANS_CASSE:
+            return True
     return False
 
 
@@ -382,6 +391,7 @@ def scanner(racine: Path):
                 if e.is_dir(follow_symlinks=False):
                     nm = e.name
                     if nm.startswith(".") or nm in NOMS_DIR_IGNORES \
+                       or nm.lower() in NOMS_DIR_IGNORES_SANS_CASSE \
                        or Path(nm).suffix.lower() in EXT_DOSSIERS_OPAQUES:
                         continue                  # élagage
                     sous_dossiers.append(e.path)
@@ -595,7 +605,7 @@ def choisir_journal(racine: Path):
 
 def _inscriptible(cand: Path) -> bool:
     try:
-        with cand.open("w"):
+        with cand.open("x"):                  # jamais tronquer un journal existant
             pass
         cand.unlink()
         return True

@@ -479,7 +479,10 @@ def test_racine_interdite(chemin):
     assert corr.est_racine_interdite(Path(chemin)) is True
 
 
-@pytest.mark.parametrize("chemin", ["/Volumes/Archive", "/Users/moi/Pictures", "/data/photos"])
+@pytest.mark.parametrize("chemin", [
+    "/Volumes/Archive", "/Users/moi/Pictures", "/data/photos",
+    "/Users/moi/Library/Mobile Documents/com~apple~CloudDocs",   # sous Library : accepté (question au PO)
+])
 def test_racine_autorisee(chemin):
     assert corr.est_racine_interdite(Path(chemin)) is False
 
@@ -581,6 +584,7 @@ def test_macos_cible_apparue_jamais_echangee(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("dossier", [
     "X.app", "P.photoslibrary", "Y.pages", "Library", ".Trash", ".Trashes", "Z.APP",
+    "iPhoto Library.photolibrary", "old.migratedphotolibrary", "$RECYCLE.BIN", "$Recycle.Bin",
 ])
 def test_pas_de_descente_dans_zones_protegees(tmp_path, dossier):
     (tmp_path / dossier).mkdir()
@@ -695,3 +699,147 @@ def test_interruption_application_journal(tmp_path, monkeypatch, capsys):
     assert "INTERROMPU" in texte and "2 fichier(s) traité(s) sur 5" in texte
     assert "Renommés avec succès : 2" in texte
     assert "Interrompu" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# §3 — refus net au niveau programme : code de sortie non nul, aucune action
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("sous_chemin", [
+    "X.app", "P.photoslibrary/originals", "Library", ".Trash/vieux", "$RECYCLE.BIN/S-1-5",
+    "iPhoto Library.photolibrary/Masters",
+])
+def test_main_refuse_racine_protegee(tmp_path, monkeypatch, sous_chemin):
+    racine = tmp_path / sous_chemin
+    racine.mkdir(parents=True)
+    touch(racine / "a.JPG.JPG")
+    monkeypatch.setattr(corr, "choisir_journal", lambda r: pytest.fail("aucun journal attendu"))
+    monkeypatch.setattr("sys.argv", ["prog", str(racine), "--oui"])
+    with pytest.raises(SystemExit) as fin:
+        corr.main()
+    assert fin.value.code != 0
+    assert noms(racine) == ["a.JPG.JPG"]
+
+
+def test_main_refuse_racine_inexistante(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["prog", str(tmp_path / "absent"), "--oui"])
+    with pytest.raises(SystemExit) as fin:
+        corr.main()
+    assert fin.value.code != 0
+    assert not (tmp_path / "absent").exists()
+
+
+# ---------------------------------------------------------------------------
+# §3 — journal écrit AVANT toute modification, --dry-run compris, même liste que l'aperçu
+# ---------------------------------------------------------------------------
+
+def _lignes_apercu(sortie: str):
+    lignes = sortie.split("Renommages prévus :", 1)[1].splitlines()
+    return [l.strip() for l in lignes if l.startswith("  ") and l.strip()]
+
+
+def test_journal_dry_run_meme_liste_que_apercu(tmp_path, monkeypatch, capsys):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    for nom in ["a.JPG.JPG", "b.ZIP.ZIP", "c.XLSX", "d.jpg", "x.FOO.FOO"]:
+        touch(racine / nom)
+    journal = tmp_path / "rename_log_test.txt"
+    monkeypatch.setattr(corr, "choisir_journal", lambda r: (journal, False))
+    monkeypatch.setattr("sys.argv", ["prog", str(racine), "--dry-run"])
+    corr.main()
+    apercu = _lignes_apercu(capsys.readouterr().out)
+    texte = journal.read_text(encoding="utf-8")
+    section = texte.split("À CORRIGER", 1)[1].split("DÉJÀ CORRECTS", 1)[0]
+    entrees = [l.strip() for l in section.splitlines()[2:] if l.strip()]
+    assert entrees == apercu
+    assert apercu == ["a.JPG.JPG", "→ a.jpg", "b.ZIP.ZIP", "→ b.zip", "c.XLSX", "→ c.xlsx",
+                      "x.FOO.FOO", "→ x.foo"]
+    assert noms(racine) == sorted(["a.JPG.JPG", "b.ZIP.ZIP", "c.XLSX", "d.jpg", "x.FOO.FOO"])
+
+
+def test_journal_ecrit_avant_premier_renommage(tmp_path, monkeypatch):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    touch(racine / "a.JPG.JPG")
+    touch(racine / "b.ZIP.ZIP")
+    journal = tmp_path / "rename_log_test.txt"
+    vrai = corr._rename_no_overwrite
+    vus = []
+
+    def espion(src, dst):
+        vus.append(journal.read_text(encoding="utf-8") if journal.exists() else None)
+        return vrai(src, dst)
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", espion)
+    monkeypatch.setattr(corr, "choisir_journal", lambda r: (journal, False))
+    monkeypatch.setattr("sys.argv", ["prog", str(racine), "--oui"])
+    corr.main()
+    assert len(vus) == 2
+    assert vus[0] is not None and "a.JPG.JPG" in vus[0] and "b.ZIP.ZIP" in vus[0]
+    assert "RÉSULTATS" not in vus[0]
+
+
+# ---------------------------------------------------------------------------
+# §5 — orphelin d'un run interrompu signalé à l'écran ET dans le journal
+# ---------------------------------------------------------------------------
+
+def test_orphelin_signale_ecran_et_journal(tmp_path, monkeypatch, capsys):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    orphelin = f"{corr.PREFIXE_TMP}a.jpg"
+    touch(racine / orphelin, b"orphelin")
+    touch(racine / "b.JPG")
+    journal = tmp_path / "rename_log_test.txt"
+    monkeypatch.setattr(corr, "choisir_journal", lambda r: (journal, False))
+    monkeypatch.setattr("sys.argv", ["prog", str(racine), "--oui"])
+    corr.main()
+    assert orphelin in capsys.readouterr().out
+    assert orphelin in journal.read_text(encoding="utf-8").split("ORPHELINS", 1)[1]
+    assert (racine / orphelin).read_bytes() == b"orphelin"
+
+
+# ---------------------------------------------------------------------------
+# §2 pipeline — entrée non interactive sans --oui : aucune écriture
+# ---------------------------------------------------------------------------
+
+class _StdinPasTTY:
+    def isatty(self):
+        return False
+
+
+def test_non_interactif_sans_oui_naplique_rien(tmp_path, monkeypatch):
+    touch(tmp_path / "a.JPG.JPG")
+    monkeypatch.setattr(corr, "choisir_journal", lambda racine: (None, False))
+    monkeypatch.setattr("sys.argv", ["prog", str(tmp_path)])
+    monkeypatch.setattr("sys.stdin", _StdinPasTTY())
+    monkeypatch.setattr("builtins.input", lambda invite="": pytest.fail("aucune invite attendue"))
+    corr.main()
+    assert noms(tmp_path) == ["a.JPG.JPG"]
+
+
+# ---------------------------------------------------------------------------
+# §3 — choisir le journal ne tronque ni ne supprime jamais un fichier existant
+# ---------------------------------------------------------------------------
+
+def test_choisir_journal_ne_detruit_pas_un_homonyme(tmp_path, monkeypatch):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    ici = tmp_path / "ici"
+    ici.mkdir()
+    ailleurs = tmp_path / "ailleurs"
+    ailleurs.mkdir()
+
+    class _Fige(corr.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 1, 2, 3, 4, 5)
+
+    monkeypatch.setattr(corr, "datetime", _Fige)
+    homonyme = ici / "rename_log_2026-01-02_03-04-05.txt"
+    homonyme.write_text("journal précédent")
+    monkeypatch.chdir(ici)
+    monkeypatch.setenv("HOME", str(ailleurs))
+    monkeypatch.setattr(corr.tempfile, "tempdir", str(ailleurs))
+    journal, _ = corr.choisir_journal(racine.resolve())
+    assert homonyme.read_text() == "journal précédent"
+    assert journal is not None and journal != homonyme.resolve()

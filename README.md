@@ -16,7 +16,7 @@ Le contenu des fichiers n'est jamais ouvert ni lu. Rien n'est déplacé, rien n'
 
 ## Garantie d'intégrité des données et des dates
 
-Renommer, c'est modifier l'entrée de répertoire (le lien nom vers fichier), pas le fichier. Les octets de données, le mtime (date de modification), le birthtime (date de création Finder) et les attributs étendus (tags Finder) ne sont pas touchés. Le seul horodatage que tout renommage POSIX met à jour est le ctime (« Attributs modifiés »), qui n'est pas affiché par le Finder et n'a aucun rapport avec les dates EXIF, lesquelles vivent dans le contenu jamais lu.
+Renommer, c'est modifier l'entrée de répertoire (le lien nom vers fichier), pas le fichier. Les octets de données, le mtime (date de modification), le birthtime (date de création Finder) et les attributs étendus (tags Finder) ne sont pas touchés. Sur le fichier, le seul horodatage que tout renommage POSIX met à jour est le ctime (« Attributs modifiés »), qui n'est pas affiché par le Finder et n'a aucun rapport avec les dates EXIF, lesquelles vivent dans le contenu jamais lu. Le dossier qui contient un fichier renommé voit en revanche sa date de modification passer à l'heure du renommage, comme pour tout renommage : un tri des dossiers par date de modification dans le Finder en sera changé.
 
 Vérifié par les tests sur plateforme Linux : hash SHA-256 des octets inchangé, `st_mtime_ns` inchangé, attributs étendus `user.*` inchangés, inode inchangé. Non vérifiable sur cette plateforme, donc à confirmer manuellement sous macOS : `st_birthtime` (absent de `os.stat` sous Linux) et les tags Finder.
 
@@ -25,8 +25,8 @@ Vérifié par les tests sur plateforme Linux : hash SHA-256 des octets inchangé
 Le déroulement est en une seule commande : SCAN (lecture des noms, liste figée), APERÇU (décompte et liste écrits, journal produit), CONFIRMATION (o/N, défaut NON), APPLICATION (uniquement sur la liste figée). Ce que l'aperçu montre est exactement ce qui sera fait.
 
 - Lecture seule des noms ; le contenu n'est jamais ouvert.
-- Refus de tourner sur `/`, un dossier système (`/System`, `/usr`…), un paquet macOS (`.app`, `.photoslibrary`, `.pages`…) ou `Library` et les corbeilles, y compris quand c'est le dossier passé en argument.
-- Ne descend jamais dans les paquets macOS, `Library` ni les corbeilles ; ne renomme jamais un dossier.
+- Refus de tourner sur `/`, un dossier système (`/System`, `/usr`…), un paquet macOS (`.app`, `.photoslibrary`, `.photolibrary` d'iPhoto, `.pages`…) ou `Library` et les corbeilles (dont `$RECYCLE.BIN` de Windows), y compris quand c'est le dossier passé en argument ou un dossier situé à l'intérieur d'un paquet ou d'une corbeille.
+- Ne descend jamais dans les paquets macOS, `Library` ni les corbeilles (`.Trash`, `.Trashes`, `$RECYCLE.BIN`) ; ne renomme jamais un dossier.
 - Les liens symboliques ne sont ni suivis en source, ni écrasés en cible. Une entrée symbolique, même cassée, qui occupe le nom cible provoque une abstention nette.
 - Aucun fichier existant n'est jamais écrasé. Le renommage passe par un appel système qui échoue si la cible existe déjà (`renameat2` avec `RENAME_NOREPLACE` sous Linux, `renamex_np` avec `RENAME_EXCL` sous macOS), ce qui ferme la fenêtre entre le test et le renommage. Un conflit avec un autre fichier ajoute un suffixe `_2`, `_3`…
 - Le renommage de casse pure passe par un nom temporaire avec retour arrière automatique, y compris si le programme est interrompu (Ctrl-C). Aucun nom temporaire `__rename_tmp_*` ne survit à une sortie rattrapable ; un tel reste laissé par un run non rattrapable (coupure de courant, `SIGKILL`) est signalé au run suivant, jamais renommé en silence.
