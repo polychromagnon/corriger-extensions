@@ -958,3 +958,29 @@ corr.appliquer(modifs)
     assert r.returncode == -signal.SIGTERM
     assert noms(tmp_path) == ["a.jpg", "b.JPG"]
     assert a.with_name("a.jpg").read_bytes() == b"un"
+
+
+# ---------------------------------------------------------------------------
+# Dossiers illisibles : jamais de « Rien à faire » qui laisserait croire que tout a été examiné
+# ---------------------------------------------------------------------------
+
+def _scanner_avec_dossier_illisible(vrai):
+    def scanner(racine):
+        modifs, deja_ok, erreurs_acces, orphelins = vrai(racine)
+        return modifs, deja_ok, erreurs_acces + ["[Errno 13] Permission denied: 'verrouille'"], orphelins
+    return scanner
+
+
+@pytest.mark.parametrize("fichiers,attendu_renommes", [([], 0), (["a.JPG.JPG"], 1)])
+def test_dossiers_illisibles_annonces(tmp_path, monkeypatch, capsys, fichiers, attendu_renommes):
+    for nom in fichiers:
+        touch(tmp_path / nom)
+    monkeypatch.setattr(corr, "scanner", _scanner_avec_dossier_illisible(corr.scanner))
+    monkeypatch.setattr(corr, "choisir_journal", lambda r: (None, False))
+    monkeypatch.setattr("sys.argv", ["prog", str(tmp_path), "--oui"])
+    corr.main()
+    sortie = capsys.readouterr().out
+    assert "Rien à faire" not in sortie
+    fin = sortie.rsplit("Renommages prévus", 1)[-1]
+    assert "1 dossier(s) n'ont pas pu être lus" in fin
+    assert noms(tmp_path) == (["a.jpg"] if attendu_renommes else [])

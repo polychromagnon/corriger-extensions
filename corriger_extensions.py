@@ -795,7 +795,11 @@ def main() -> None:
     afficher_apercu(racine, modifs, deja_ok, erreurs_acces, orphelins, journal, meme_volume, tout)
 
     if not modifs:
-        print("\n✅ Aucune extension à corriger. Rien à faire.")
+        if erreurs_acces:
+            print(f"\n⚠️  Aucune extension à corriger dans les dossiers lus, mais "
+                  f"{len(erreurs_acces)} dossier(s) n'ont pas pu être lus : ils n'ont pas été examinés.")
+        else:
+            print("\n✅ Aucune extension à corriger. Rien à faire.")
         return
 
     if dry_run:
@@ -837,6 +841,8 @@ def main() -> None:
         print(f"⏭️  {len(ignores)} ignoré(s) par prudence (état changé depuis le scan ; détails dans le journal).")
     if erreurs:
         print(f"❌ {len(erreurs)} erreur(s) (détails dans le journal).")
+    if erreurs_acces:
+        print(f"🚫 {len(erreurs_acces)} dossier(s) n'ont pas pu être lus : ils n'ont pas été examinés.")
     if journal:
         print(f"📝 Journal complet : {journal}")
 
