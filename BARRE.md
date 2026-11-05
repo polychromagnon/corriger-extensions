@@ -25,7 +25,7 @@
 > Une décision par ligne : qui la pose, la question, la proposition de l'équipage, puis la flèche où tu réponds (un mot suffit : oui, non, un chiffre, un choix). Le prochain run lit ta réponse, l'applique, retire la ligne, et grave en section 1 ce qui mérite de durer. **Section vide : rien ne t'attend.** Tant qu'une ligne reste sans réponse, le SPEC n'est pas figé et rien ne part en production.
 
 
-- [Claude, 2026-11-05] La liste d'extensions connues (38 : photos, vidéos, audio, pdf, doc, docx, txt, rtf, aae) laisse tels quels tous les autres types : `b.ZIP.ZIP`, `c.XLSX`, `f.csv.csv` ne sont pas corrigés. Or tu as dit le 2026-11-05 que l'outil sert pour tous les fichiers. Proposition : élargir la liste aux formats courants (archives, bureautique, web, données). →
+- [Claude, 2026-11-05] La liste d'extensions connues (42 : photos, vidéos, audio, pdf, doc, docx, txt, rtf, aae) laisse tels quels tous les autres types : `b.ZIP.ZIP`, `c.XLSX`, `f.csv.csv` ne sont pas corrigés. Or tu as dit le 2026-11-05 que l'outil sert pour tous les fichiers. Proposition : élargir la liste aux formats courants (archives, bureautique, web, données). →
 
 ## 4. Décidé sans toi — à revoir
 
@@ -53,5 +53,5 @@
 
 - Fait : SPEC.md gelé, code v4.1.0 et tests au 2026-08-29 ; barre créée le 2026-11-05.
 - Reste : ship (rejouer et compléter les preuves du SPEC, attaque du code).
-- Bloqué : rien.
-- En attente de ton feu vert : rien.
+- Bloqué : la question de la section 3 (liste d'extensions), qui t'attend.
+- En attente de ton feu vert : ta réponse à la section 3.
