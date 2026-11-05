@@ -75,6 +75,7 @@ import os
 import signal
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 from datetime import datetime
 from collections import namedtuple
@@ -144,6 +145,7 @@ RACINES_INTERDITES = (
 # Au-delà de ce nombre de renommages, on n'affiche qu'un aperçu à l'écran (la
 # liste complète reste dans le journal). --tout, ou l'absence de journal, force
 # l'affichage intégral.
+SEUIL_LISTES = 40               # au-delà, compagnons et laissés de côté ne sont listés qu'au journal
 SEUIL_APERCU = 200
 
 # Préfixe des noms temporaires du renommage de casse en deux temps.
@@ -203,6 +205,16 @@ class Interrompu(KeyboardInterrupt):
         super().__init__()
         self.resultats = resultats
         self.traites = traites
+
+
+class _ArretParSignal(KeyboardInterrupt):
+    def __init__(self, signum: int):
+        super().__init__()
+        self.signum = signum
+
+
+def _lever_arret(signum, _cadre) -> None:
+    raise _ArretParSignal(signum)
 
 
 class _AtomicIndisponible(Exception):
@@ -358,13 +370,34 @@ def est_racine_interdite(racine: Path) -> bool:
     return False
 
 
-def scanner(racine: Path):
+RAISON_LIEN = "lien symbolique non suivi"
+RAISON_CIBLE_LIEN = "nom corrigé déjà pris par un lien symbolique"
+RAISON_JOURNAL = "journal de l'outil (rename_log_*)"
+
+
+def _raison_dossier_saute(nom: str):
+    if nom in NOMS_DIR_IGNORES or nom.lower() in NOMS_DIR_IGNORES_SANS_CASSE:
+        return "dossier Library ou corbeille"
+    if Path(nom).suffix.lower() in EXT_DOSSIERS_OPAQUES:
+        return "paquet macOS"
+    if nom.startswith("."):
+        return "dossier caché"
+    return None
+
+
+def scanner(racine: Path, laisses=None):
     """Parcourt l'arborescence et renvoie (modifs, nb_deja_ok, erreurs_acces, orphelins).
 
     N'ouvre aucun fichier. Utilise os.scandir (rapide sur gros volumes : le type
     de chaque entrée est connu sans appel système supplémentaire). `orphelins`
     liste les noms temporaires __rename_tmp_* laissés par un run précédent interrompu.
+    `laisses`, s'il est fourni, reçoit (chemin relatif, raison, chemin) pour chaque
+    entrée laissée de côté (liens, dossiers sautés, journaux, cible prise par un lien).
     """
+    def noter(chemin: str, raison: str) -> None:
+        if laisses is not None:
+            laisses.append((_rel(Path(chemin), racine), raison, chemin))
+
     modifs: list[Modif] = []
     deja_ok = 0
     erreurs_acces: list[str] = []
@@ -385,13 +418,13 @@ def scanner(racine: Path):
         for e in entrees:
             try:
                 if e.is_symlink():
-                    continue                      # on ne suit jamais les liens
+                    noter(e.path, RAISON_LIEN)    # on ne suit jamais les liens
+                    continue
                 if e.is_dir(follow_symlinks=False):
-                    nm = e.name
-                    if nm.startswith(".") or nm in NOMS_DIR_IGNORES \
-                       or nm.lower() in NOMS_DIR_IGNORES_SANS_CASSE \
-                       or Path(nm).suffix.lower() in EXT_DOSSIERS_OPAQUES:
-                        continue                  # élagage
+                    raison = _raison_dossier_saute(e.name)
+                    if raison:
+                        noter(e.path, raison)     # élagage
+                        continue
                     sous_dossiers.append(e.path)
                 elif e.is_file(follow_symlinks=False):
                     fichiers.append(e)
@@ -403,7 +436,10 @@ def scanner(racine: Path):
         reserves: set = set()
         for e in sorted(fichiers, key=lambda x: x.name):
             nom = e.name
-            if nom.startswith(".") or nom.startswith("rename_log_"):
+            if nom.startswith("."):
+                continue
+            if nom.startswith("rename_log_"):
+                noter(e.path, RAISON_JOURNAL)
                 continue
             if nom.startswith(PREFIXE_TMP):
                 orphelins.append(_rel(Path(e.path), racine))
@@ -421,6 +457,7 @@ def scanner(racine: Path):
             # détruit pas, et on ne suffixe pas autour (ce nom EST la correction
             # voulue) — abstention nette sur ce fichier.
             if os.path.islink(ideal):
+                noter(e.path, RAISON_CIBLE_LIEN)
                 continue
 
             cible = ideal
@@ -447,6 +484,62 @@ def scanner(racine: Path):
 
     modifs.sort(key=lambda m: m.rel)
     return modifs, deja_ok, erreurs_acces, orphelins
+
+
+def compagnons(modifs, laisses) -> list:
+    """Entrées qui risquent de ne plus retrouver un fichier renommé : (entrée, fichier visé, genre).
+
+    Dans le même dossier : <nom complet>.<ext> (darktable, digiKam) et
+    <nom sans sa dernière extension>.xmp quand ce radical change (Lightroom) ;
+    dans l'arborescence scannée : les liens symboliques qui pointent vers lui.
+    Rien n'est renommé : c'est un signalement.
+    """
+    sources = {m.src for m in modifs}
+    par_chemin_reel = {os.path.realpath(m.src): m for m in modifs}
+    contenus: dict = {}
+    trouves = []
+    for m in modifs:
+        dossier, nom = os.path.split(m.src)
+        if dossier not in contenus:
+            try:
+                noms_dossier = os.listdir(dossier)
+            except OSError:
+                noms_dossier = []
+            par_base: dict = {}
+            for n in noms_dossier:
+                par_base.setdefault(n.rsplit(".", 1)[0], []).append(n)
+            contenus[dossier] = (par_base, {n.lower(): n for n in noms_dossier})
+        par_base, par_minuscules = contenus[dossier]
+        base_rel = os.path.dirname(m.rel)
+        for n in par_base.get(nom, []):
+            if os.path.join(dossier, n) not in sources:
+                trouves.append((os.path.join(base_rel, n), m.rel, "compagnon nommé d'après le nom complet"))
+        radical_avant = nom.rsplit(".", 1)[0]
+        if radical_avant != m.cible_nom.rsplit(".", 1)[0]:
+            n = par_minuscules.get(f"{radical_avant}.xmp".lower())
+            if n and os.path.join(dossier, n) not in sources:
+                trouves.append((os.path.join(base_rel, n), m.rel, "compagnon Lightroom (même radical)"))
+    for rel, raison, chemin in laisses:
+        if raison == RAISON_LIEN:
+            vise = par_chemin_reel.get(os.path.realpath(chemin))
+            if vise:
+                trouves.append((rel, vise.rel, "lien symbolique"))
+    return sorted(set(trouves))
+
+
+_INVERSIONS_DE_SENS = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A))
+_ECHAPPEMENTS = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _lisible(texte) -> str:
+    """Échappe les caractères de contrôle et d'inversion de sens d'un nom affiché."""
+    sortie = []
+    for c in str(texte):
+        if unicodedata.category(c) == "Cc" or ord(c) in _INVERSIONS_DE_SENS:
+            sortie.append(_ECHAPPEMENTS.get(c) or (f"\\x{ord(c):02x}" if ord(c) < 0x100 else f"\\u{ord(c):04x}"))
+        else:
+            sortie.append(c)
+    return "".join(sortie)
 
 
 def _rel(src: Path, racine: Path) -> str:
@@ -670,27 +763,41 @@ def _inscriptible(cand: Path) -> bool:
         return False
 
 
-def ecrire_journal_prevu(journal: Path, racine, modifs, deja_ok, erreurs_acces, orphelins) -> None:
+def _section(f, titre: str, lignes) -> None:
+    f.write(f"\n{titre} — {len(lignes)}\n")
+    f.write("-" * 78 + "\n")
+    for ligne in lignes:
+        f.write(f"{ligne}\n")
+
+
+def _lignes_laisses(laisses):
+    return [f"{_lisible(rel)} ({raison})" for rel, raison, _ in laisses]
+
+
+def _lignes_compagnons(comps):
+    return [f"{_lisible(entree)} → vise {_lisible(vise)} ({genre})" for entree, vise, genre in comps]
+
+
+def ecrire_journal_prevu(journal: Path, racine, modifs, deja_ok, erreurs_acces, orphelins,
+                         laisses=(), comps=()) -> None:
     with journal.open("w", encoding="utf-8", errors="backslashreplace") as f:
         f.write(f"Journal de nettoyage d'extensions — {datetime.now():%Y-%m-%d %H:%M:%S}\n")
-        f.write(f"Racine : {racine}\n")
+        f.write(f"Racine : {_lisible(racine)}\n")
         f.write("État : LISTE PRÉVUE (rien n'a encore été renommé)\n")
         f.write("=" * 78 + "\n\n")
         f.write(f"À CORRIGER — {len(modifs)} fichier(s)\n")
         f.write("-" * 78 + "\n")
         for m in modifs:
-            f.write(f"{m.rel}\n  → {m.cible_nom}\n\n")
+            f.write(f"{_lisible(m.rel)}\n  → {_lisible(m.cible_nom)}\n\n")
         f.write(f"\nDÉJÀ CORRECTS — {deja_ok} fichier(s) (nom déjà propre)\n")
+        if comps:
+            _section(f, "COMPAGNONS ET LIENS À VÉRIFIER (jamais renommés)", _lignes_compagnons(comps))
+        if laisses:
+            _section(f, "LAISSÉS DE CÔTÉ (jamais renommés)", _lignes_laisses(laisses))
         if orphelins:
-            f.write(f"\nORPHELINS D'UN RUN INTERROMPU — {len(orphelins)} (jamais renommés)\n")
-            f.write("-" * 78 + "\n")
-            for rel in orphelins:
-                f.write(f"{rel}\n")
+            _section(f, "ORPHELINS D'UN RUN INTERROMPU (jamais renommés)", [_lisible(r) for r in orphelins])
         if erreurs_acces:
-            f.write(f"\nDOSSIERS INACCESSIBLES (ignorés) — {len(erreurs_acces)}\n")
-            f.write("-" * 78 + "\n")
-            for msg in erreurs_acces:
-                f.write(f"{msg}\n")
+            _section(f, "DOSSIERS INACCESSIBLES (non examinés)", [_lisible(m) for m in erreurs_acces])
 
 
 def ajouter_resultats(journal: Path, renommes, ignores, erreurs, repli, interruption=None) -> None:
@@ -699,36 +806,50 @@ def ajouter_resultats(journal: Path, renommes, ignores, erreurs, repli, interrup
         f.write(f"RÉSULTATS — {datetime.now():%Y-%m-%d %H:%M:%S}\n")
         f.write("=" * 78 + "\n")
         if interruption:
-            traites, total = interruption
-            f.write(f"INTERROMPU (Ctrl-C) après {traites} fichier(s) traité(s) sur {total}, dans "
-                    "l'ordre de la liste ci-dessus. Le fichier en cours au moment de l'arrêt "
-                    "peut avoir été renommé ou non ; les suivants n'ont pas été touchés.\n")
+            traites, total, cause = interruption
+            f.write(f"INTERROMPU ({cause}) après {traites} fichier(s) traité(s) sur {total}, dans "
+                    "l'ordre de la liste ci-dessus ; les suivants n'ont pas été touchés.\n")
         f.write(f"Renommés avec succès : {renommes}\n")
         if repli:
             f.write(f"\n{AVERTISSEMENT_NON_ATOMIQUE}\n")
         if ignores:
-            f.write(f"\nIGNORÉS (état changé depuis le scan, par prudence) — {len(ignores)}\n")
-            f.write("-" * 78 + "\n")
-            for rel, why in ignores:
-                f.write(f"{rel} : {why}\n")
+            _section(f, "IGNORÉS (état changé depuis le scan, par prudence)",
+                     [f"{_lisible(rel)} : {_lisible(why)}" for rel, why in ignores])
         if erreurs:
-            f.write(f"\nERREURS — {len(erreurs)}\n")
-            f.write("-" * 78 + "\n")
-            for rel, why in erreurs:
-                f.write(f"{rel} : {why}\n")
+            _section(f, "ERREURS", [f"{_lisible(rel)} : {_lisible(why)}" for rel, why in erreurs])
 
 
-def afficher_apercu(racine, modifs, deja_ok, erreurs_acces, orphelins, journal, meme_volume, tout) -> None:
+def _afficher_liste(titre: str, lignes, journal, tout) -> None:
+    if not lignes:
+        return
+    print(f"{titre} : {len(lignes)}")
+    if tout or journal is None or len(lignes) <= SEUIL_LISTES:
+        for ligne in lignes:
+            print(f"      · {ligne}")
+    else:
+        print("      (liste complète dans le journal)")
+
+
+def afficher_apercu(racine, modifs, deja_ok, erreurs_acces, orphelins, journal, meme_volume, tout,
+                    laisses=(), comps=()) -> None:
     print()
-    print(f"📁 Racine                  : {racine}")
+    print(f"📁 Racine                  : {_lisible(racine)}")
     print(f"🔧 À corriger              : {len(modifs)}")
     print(f"✅ Déjà corrects           : {deja_ok}")
     if erreurs_acces:
-        print(f"🚫 Dossiers inaccessibles  : {len(erreurs_acces)} (ignorés)")
+        print(f"🚫 Dossiers inaccessibles  : {len(erreurs_acces)} (non examinés)")
     if orphelins:
         print(f"🧹 Restes d'un run interrompu (__rename_tmp_*, jamais renommés) : {len(orphelins)}")
         for rel in orphelins:
-            print(f"      · {rel}")
+            print(f"      · {_lisible(rel)}")
+    if laisses:
+        par_raison: dict = {}
+        for _, raison, _ in laisses:
+            par_raison[raison] = par_raison.get(raison, 0) + 1
+        detail = ", ".join(f"{n} {raison}" for raison, n in sorted(par_raison.items()))
+        _afficher_liste(f"🙈 Laissés de côté ({detail})", _lignes_laisses(laisses), journal, tout)
+    _afficher_liste("🔗 Compagnons et liens à vérifier (jamais renommés)", _lignes_compagnons(comps),
+                    journal, tout)
     if journal:
         print(f"📝 Liste complète (journal): {journal}")
         if meme_volume:
@@ -744,8 +865,8 @@ def afficher_apercu(racine, modifs, deja_ok, erreurs_acces, orphelins, journal, 
     integral = tout or journal is None or len(modifs) <= SEUIL_APERCU
     a_montrer = modifs if integral else modifs[:40]
     for m in a_montrer:
-        print(f"  {m.rel}")
-        print(f"      → {m.cible_nom}")
+        print(f"  {_lisible(m.rel)}")
+        print(f"      → {_lisible(m.cible_nom)}")
     if len(a_montrer) < len(modifs):
         reste = len(modifs) - len(a_montrer)
         print(f"  … +{reste} autre(s) non affichés ici.")
@@ -770,7 +891,7 @@ def demander_confirmation(nb: int) -> bool:
 # Point d'entrée
 # ----------------------------------------------------------------------------
 
-def main() -> None:
+def main() -> int:
     # Un nom mal encodé (transfert depuis Windows ou Linux) s'affiche échappé au lieu
     # de faire planter l'aperçu.
     for flux in (sys.stdout, sys.stderr):
@@ -801,27 +922,32 @@ def main() -> None:
 
     racine = Path(chemins[0]).expanduser().resolve()
     if not racine.is_dir():
-        print(f"❌ Dossier introuvable ou invalide : {racine}")
+        print(f"❌ Dossier introuvable ou invalide : {_lisible(racine)}")
         sys.exit(1)
     if est_racine_interdite(racine):
-        print(f"⛔ Refus : « {racine} » est un emplacement protégé (système, paquet macOS ou corbeille).")
+        print(f"⛔ Refus : « {_lisible(racine)} » est un emplacement protégé (système, paquet macOS ou corbeille).")
         print("   Vise un dossier de données (ex. ~/Pictures, ~/Movies, /Volumes/TonArchive).")
         sys.exit(1)
 
     # 1) Scan (lecture des noms uniquement)
-    print(f"🔎 Analyse des noms de fichiers sous : {racine}")
+    print(f"🔎 Analyse des noms de fichiers sous : {_lisible(racine)}")
     print("   (lecture seule, le contenu des fichiers n'est jamais ouvert)")
-    modifs, deja_ok, erreurs_acces, orphelins = scanner(racine)
+    laisses: list = []
+    modifs, deja_ok, erreurs_acces, orphelins = scanner(racine, laisses)
+    comps = compagnons(modifs, laisses)
 
     # 2) Aperçu + journal de la liste prévue (écrit AVANT toute modification, --dry-run compris)
     journal, meme_volume = choisir_journal(racine)
     if journal:
         try:
-            ecrire_journal_prevu(journal, racine, modifs, deja_ok, erreurs_acces, orphelins)
+            ecrire_journal_prevu(journal, racine, modifs, deja_ok, erreurs_acces, orphelins,
+                                 laisses, comps)
         except OSError as e:
             print(f"⚠️  Journal non écrit ({e}) ; liste affichée en entier ci-dessous.")
             journal = None
-    afficher_apercu(racine, modifs, deja_ok, erreurs_acces, orphelins, journal, meme_volume, tout)
+    afficher_apercu(racine, modifs, deja_ok, erreurs_acces, orphelins, journal, meme_volume, tout,
+                    laisses, comps)
+    code_illisibles = 1 if erreurs_acces else 0
 
     if not modifs:
         if erreurs_acces:
@@ -829,33 +955,39 @@ def main() -> None:
                   f"{len(erreurs_acces)} dossier(s) n'ont pas pu être lus : ils n'ont pas été examinés.")
         else:
             print("\n✅ Aucune extension à corriger. Rien à faire.")
-        return
+        return code_illisibles
 
     if dry_run:
         print("\n🧪 --dry-run : liste affichée, aucune modification effectuée.")
-        return
+        return code_illisibles
 
     # 3) Confirmation
     ok = True if auto_oui else demander_confirmation(len(modifs))
     if not ok:
         print("✋ Aucune modification effectuée.")
-        return
+        return code_illisibles
 
-    # 4) Application (uniquement sur la liste figée)
+    # 4) Application (uniquement sur la liste figée). SIGTERM et SIGHUP (fermeture
+    # du Terminal) sont traités comme un Ctrl-C : arrêt entre deux fichiers, journal complété.
+    anciens = {s: signal.signal(s, _lever_arret) for s in (signal.SIGTERM, signal.SIGHUP)}
     try:
         renommes, ignores, erreurs, repli = appliquer(modifs)
     except Interrompu as e:
+        signum = getattr(e.__cause__, "signum", signal.SIGINT)
+        cause = "Ctrl-C" if signum == signal.SIGINT else signal.Signals(signum).name
         if journal:
             try:
-                ajouter_resultats(journal, *e.resultats, interruption=(e.traites, len(modifs)))
+                ajouter_resultats(journal, *e.resultats, interruption=(e.traites, len(modifs), cause))
             except OSError:
                 pass
-        print(f"\n⛔ Interrompu après {e.traites} fichier(s) traité(s) sur {len(modifs)} "
-              f"({e.resultats[0]} renommé(s)) ; le fichier en cours peut avoir été renommé ou non, "
-              "les suivants n'ont pas été touchés.")
+        print(f"\n⛔ Interrompu ({cause}) après {e.traites} fichier(s) traité(s) sur {len(modifs)} "
+              f"({e.resultats[0]} renommé(s)) ; les suivants n'ont pas été touchés.")
         if journal:
             print(f"📝 Journal complet : {journal}")
-        sys.exit(130)
+        sys.exit(128 + signum)
+    finally:
+        for s, ancien in anciens.items():
+            signal.signal(s, ancien)
     if journal:
         try:
             ajouter_resultats(journal, renommes, ignores, erreurs, repli)
@@ -874,7 +1006,8 @@ def main() -> None:
         print(f"🚫 {len(erreurs_acces)} dossier(s) n'ont pas pu être lus : ils n'ont pas été examinés.")
     if journal:
         print(f"📝 Journal complet : {journal}")
+    return 1 if erreurs or erreurs_acces else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

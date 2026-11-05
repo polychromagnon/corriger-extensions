@@ -965,8 +965,8 @@ corr.appliquer(modifs)
 # ---------------------------------------------------------------------------
 
 def _scanner_avec_dossier_illisible(vrai):
-    def scanner(racine):
-        modifs, deja_ok, erreurs_acces, orphelins = vrai(racine)
+    def scanner(racine, laisses=None):
+        modifs, deja_ok, erreurs_acces, orphelins = vrai(racine, laisses)
         return modifs, deja_ok, erreurs_acces + ["[Errno 13] Permission denied: 'verrouille'"], orphelins
     return scanner
 
@@ -978,7 +978,7 @@ def test_dossiers_illisibles_annonces(tmp_path, monkeypatch, capsys, fichiers, a
     monkeypatch.setattr(corr, "scanner", _scanner_avec_dossier_illisible(corr.scanner))
     monkeypatch.setattr(corr, "choisir_journal", lambda r: (None, False))
     monkeypatch.setattr("sys.argv", ["prog", str(tmp_path), "--oui"])
-    corr.main()
+    assert corr.main() == 1                               # dossier illisible : code de sortie 1
     sortie = capsys.readouterr().out
     assert "Rien à faire" not in sortie
     fin = sortie.rsplit("Renommages prévus", 1)[-1]
@@ -1108,3 +1108,193 @@ def test_date_non_remise_signalee(tmp_path, monkeypatch):
     r = scan_apply(tmp_path)
     assert r["renommes"] == 1
     assert len(r["erreurs"]) == 1 and "date du dossier non remise" in r["erreurs"][0][1]
+
+
+# ---------------------------------------------------------------------------
+# §2 — compagnons et liens signalés, jamais renommés (réponse PO 7a)
+# ---------------------------------------------------------------------------
+
+def _lancer_main(racine, journal, monkeypatch, *options):
+    monkeypatch.setattr(corr, "choisir_journal", lambda r: (journal, False))
+    monkeypatch.setattr("sys.argv", ["prog", str(racine), *options])
+    return corr.main()
+
+
+def test_compagnons_et_liens_signales(tmp_path, monkeypatch, capsys):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    touch(racine / "IMG.JPG.JPG", b"photo")
+    touch(racine / "IMG.JPG.JPG.xmp", b"darktable")
+    touch(racine / "IMG.JPG.xmp", b"lightroom")
+    (racine / "raccourci").symlink_to(racine / "IMG.JPG.JPG")
+    touch(racine / "b.JPG")
+    touch(racine / "b.JPG.xmp", b"b")
+    journal = tmp_path / "rename_log_test.txt"
+    assert _lancer_main(racine, journal, monkeypatch, "--oui") == 0
+    sortie = capsys.readouterr().out
+    texte = journal.read_text(encoding="utf-8")
+    section = texte.split("COMPAGNONS ET LIENS", 1)[1].split("\n\n", 1)[0]
+    for attendu in ["IMG.JPG.JPG.xmp → vise IMG.JPG.JPG", "IMG.JPG.xmp → vise IMG.JPG.JPG",
+                    "raccourci → vise IMG.JPG.JPG", "b.JPG.xmp → vise b.JPG"]:
+        assert attendu in section and attendu in sortie
+    assert "b.xmp" not in section                         # casse seule : le radical ne change pas
+    assert sorted(n for n in os.listdir(racine)) == sorted(
+        ["IMG.jpg", "IMG.JPG.JPG.xmp", "IMG.JPG.xmp", "raccourci", "b.jpg", "b.JPG.xmp"])
+    assert os.path.islink(racine / "raccourci")
+
+
+# ---------------------------------------------------------------------------
+# §2 — abandons comptés et listés (réponse PO 8a)
+# ---------------------------------------------------------------------------
+
+def _arbre_laisses(racine):
+    racine.mkdir()
+    ailleurs = racine.parent / "ailleurs"
+    ailleurs.mkdir()
+    touch(ailleurs / "o.JPG.JPG")
+    (racine / "lien-dossier").symlink_to(ailleurs)
+    (racine / "L.JPG.JPG").symlink_to(ailleurs / "o.JPG.JPG")
+    for d in ["Library", ".cache", "X.app", "$RECYCLE.BIN"]:
+        (racine / d).mkdir()
+        touch(racine / d / "dedans.JPG.JPG")
+    touch(racine / "rename_log_ancien.txt")
+    touch(racine / "x.JPG")
+    (racine / "x.jpg").symlink_to(racine / "nulle-part")
+    touch(racine / "ok.ZIP.ZIP")
+    return {
+        "lien-dossier": corr.RAISON_LIEN, "L.JPG.JPG": corr.RAISON_LIEN,
+        "x.jpg": corr.RAISON_LIEN, "Library": "dossier Library ou corbeille",
+        "$RECYCLE.BIN": "dossier Library ou corbeille", "X.app": "paquet macOS",
+        ".cache": "dossier caché", "rename_log_ancien.txt": corr.RAISON_JOURNAL,
+        "x.JPG": corr.RAISON_CIBLE_LIEN,
+    }
+
+
+def test_laisses_de_cote_comptes_et_listes(tmp_path, monkeypatch, capsys):
+    racine = tmp_path / "racine"
+    attendus = _arbre_laisses(racine)
+    journal = tmp_path / "rename_log_test.txt"
+    assert _lancer_main(racine, journal, monkeypatch, "--oui") == 0
+    sortie = capsys.readouterr().out
+    section = journal.read_text(encoding="utf-8").split("LAISSÉS DE CÔTÉ", 1)[1].split("\n\n", 1)[0]
+    assert f"— {len(attendus)}" in section.splitlines()[0]
+    for rel, raison in attendus.items():
+        assert f"{rel} ({raison})" in section
+        assert f"· {rel} ({raison})" in sortie
+    assert "Laissés de côté (" in sortie and f": {len(attendus)}" in sortie
+    for d in ["Library", ".cache", "X.app", "$RECYCLE.BIN"]:
+        assert noms(racine / d) == ["dedans.JPG.JPG"]
+    assert noms(tmp_path / "ailleurs") == ["o.JPG.JPG"]
+    assert (racine / "x.JPG").exists() and (racine / "ok.zip").exists()
+
+
+@pytest.mark.parametrize("avec_journal", [True, False])
+def test_laisses_de_cote_longue_liste(tmp_path, monkeypatch, capsys, avec_journal):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    for i in range(corr.SEUIL_LISTES + 1):
+        (racine / f".cache{i}").mkdir()
+    touch(racine / "a.JPG.JPG")
+    journal = tmp_path / "rename_log_test.txt" if avec_journal else None
+    _lancer_main(racine, journal, monkeypatch, "--dry-run")
+    sortie = capsys.readouterr().out
+    lignes = [l for l in sortie.splitlines() if l.strip().startswith("· .cache")]
+    assert len(lignes) == (0 if avec_journal else corr.SEUIL_LISTES + 1)
+    if avec_journal:
+        assert "liste complète dans le journal" in sortie
+        assert journal.read_text(encoding="utf-8").count("(dossier caché)") == corr.SEUIL_LISTES + 1
+
+
+# ---------------------------------------------------------------------------
+# §3 — code de sortie (réponse PO 10a)
+# ---------------------------------------------------------------------------
+
+def test_code_sortie_zero(tmp_path, monkeypatch):
+    touch(tmp_path / "a.JPG.JPG")
+    assert _lancer_main(tmp_path, None, monkeypatch, "--oui") == 0
+    assert _lancer_main(tmp_path, None, monkeypatch, "--oui") == 0     # rien à faire
+
+
+def test_code_sortie_ignores_seuls_zero(tmp_path, monkeypatch):
+    touch(tmp_path / "a.JPG.JPG")
+    monkeypatch.setattr(corr, "appliquer", lambda modifs: (0, [("a.JPG.JPG", "cible occupée")], [], False))
+    assert _lancer_main(tmp_path, None, monkeypatch, "--oui") == 0
+
+
+def test_code_sortie_erreur_de_renommage(tmp_path, monkeypatch):
+    touch(tmp_path / "a.JPG.JPG")
+    touch(tmp_path / "b.ZIP.ZIP")
+
+    def erreur_io(src, dst):
+        raise OSError(errno.EIO, "erreur d'entrée-sortie", dst)
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", erreur_io)
+    assert _lancer_main(tmp_path, None, monkeypatch, "--oui") == 1
+    assert noms(tmp_path) == ["a.JPG.JPG", "b.ZIP.ZIP"]
+
+
+def test_code_sortie_usage(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["prog"])
+    with pytest.raises(SystemExit) as fin:
+        corr.main()
+    assert fin.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# §3 — arrêt par SIGTERM ou SIGHUP noté au journal, code 128 + signal (réponse PO 10a)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("nom_signal", ["SIGTERM", "SIGHUP"])
+def test_arret_par_signal_note_au_journal(tmp_path, nom_signal):
+    import subprocess
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    for i in range(4):
+        touch(racine / f"f{i}.JPG.JPG")
+    journal = tmp_path / "rename_log_test.txt"
+    script = f"""
+import os, signal, sys
+sys.path.insert(0, {str(Path(corr.__file__).parent)!r})
+import corriger_extensions as corr
+from pathlib import Path
+corr.choisir_journal = lambda r: (Path({str(journal)!r}), False)
+vrai = corr._rename_no_overwrite
+appels = []
+def coupe(src, dst):
+    r = vrai(src, dst)
+    appels.append(dst)
+    if len(appels) == 2:
+        os.kill(os.getpid(), signal.{nom_signal})
+    return r
+corr._rename_no_overwrite = coupe
+sys.argv = ["prog", {str(racine)!r}, "--oui"]
+sys.exit(corr.main())
+"""
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    signum = getattr(signal, nom_signal)
+    assert r.returncode == 128 + signum
+    texte = journal.read_text(encoding="utf-8")
+    assert f"INTERROMPU ({nom_signal}) après 2 fichier(s) traité(s) sur 4" in texte
+    assert "Renommés avec succès : 2" in texte
+    assert noms(racine) == ["f0.jpg", "f1.jpg", "f2.JPG.JPG", "f3.JPG.JPG"]
+
+
+# ---------------------------------------------------------------------------
+# §3 — caractères de contrôle échappés à l'écran et au journal (réponse PO 10a)
+# ---------------------------------------------------------------------------
+
+def test_caracteres_de_controle_echappes(tmp_path, monkeypatch, capsys):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    noms_bruts = ["a\nb.JPG.JPG", "esc\x1b[2K\rfaux.JPG.JPG", "inv‮gpj.ZIP.ZIP"]
+    for nom in noms_bruts:
+        touch(racine / nom)
+    journal = tmp_path / "rename_log_test.txt"
+    assert _lancer_main(racine, journal, monkeypatch, "--oui") == 0
+    sortie = capsys.readouterr().out
+    texte = journal.read_text(encoding="utf-8")
+    for echappe in ["a\\nb.JPG.JPG", "esc\\x1b[2K\\rfaux.JPG.JPG", "inv\\u202egpj.ZIP.ZIP"]:
+        assert echappe in sortie and echappe in texte
+    for brut in ["\x1b", "\r", "‮", "a\nb"]:
+        assert brut not in sortie and brut not in texte
+    assert sorted(os.listdir(racine)) == sorted(["a\nb.jpg", "esc\x1b[2K\rfaux.jpg", "inv‮gpj.zip"])
