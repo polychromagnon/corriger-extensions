@@ -36,6 +36,7 @@
 - [trust, 2026-11-05] Fichiers compagnons nommés d'après le fichier complet (`IMG.JPG.JPG.xmp` de darktable ou digiKam, `IMG.JPG.xmp` de Lightroom) : quand `IMG.JPG.JPG` devient `IMG.jpg`, son compagnon n'est ni renommé ni signalé, et le logiciel qui l'a écrit ne le retrouvera plus. Proposition : les signaler à l'aperçu et au journal, sans les renommer. →
 
 - [trust, 2026-11-05] Abandons silencieux au scan : un fichier dont le nom corrigé est déjà pris par un lien symbolique, ou un fichier nommé `rename_log_*`, est laissé de côté sans être compté ni affiché ; il reste cassé sans que tu le saches. Proposition : les compter et les lister à l'aperçu et au journal, sans les renommer. →
+- [trust, 2026-11-05] Un nom temporaire `__rename_tmp_*` laissé par une coupure brutale (courant, arrêt forcé) est signalé au lancement suivant mais jamais remis en état : tu dois le renommer à la main, son nom d'origine n'étant plus lisible que dans le journal. Les arrêts ordinaires (Ctrl-C, fermeture du Terminal) n'en laissent plus. Proposition : le laisser tel quel (signalé), la remise en état automatique étant rare et risquée. →
 ## 4. Décidé sans toi — à revoir
 
 > Une ligne par décision prise en ton absence : le choix, l'alternative écartée, la raison. Trois gestes possibles : tu la laisses (elle reste un défaut tacite), tu la graves en section 1 (elle devient loi), ou tu écris **NON** en fin de ligne (le prochain run la défait et repose la question en section 3).

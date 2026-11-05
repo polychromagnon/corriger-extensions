@@ -72,6 +72,7 @@ Licence : MIT
 import ctypes
 import errno
 import os
+import signal
 import sys
 import tempfile
 from pathlib import Path
@@ -474,6 +475,9 @@ def _temp_libre(src: Path, cible_nom: str) -> Path:
     return temp
 
 
+_SIGNAUX_DIFFERES = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
+
+
 def appliquer(modifs: list[Modif]):
     """Exécute les renommages de la liste.
 
@@ -490,8 +494,15 @@ def appliquer(modifs: list[Modif]):
     traites = 0
     try:
         for m in modifs:
-            renommes, repli = _appliquer_un(m, renommes, ignores, erreurs, repli)
-            traites += 1
+            # Un signal d'arrêt reçu pendant le renommage d'un fichier est différé
+            # jusqu'à la fin de ce fichier : jamais de nom temporaire laissé entre
+            # les deux étapes, jamais de compteur décalé.
+            masque = signal.pthread_sigmask(signal.SIG_BLOCK, _SIGNAUX_DIFFERES)
+            try:
+                renommes, repli = _appliquer_un(m, renommes, ignores, erreurs, repli)
+                traites += 1
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, masque)
     except KeyboardInterrupt as e:
         raise Interrompu((renommes, ignores, erreurs, repli), traites) from e
     return renommes, ignores, erreurs, repli

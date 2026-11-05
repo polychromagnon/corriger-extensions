@@ -10,6 +10,7 @@ import ctypes
 import errno
 import hashlib
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -898,3 +899,62 @@ def test_casse_nom_long(tmp_path):
     assert erreurs == [] and renommes == 1
     assert noms(tmp_path) == ["é" * 120 + ".jpg"]
     assert (tmp_path / ("é" * 120 + ".jpg")).read_bytes() == b"photo"
+
+
+# ---------------------------------------------------------------------------
+# §3 — un vrai signal d'arrêt reçu entre les deux étapes d'un renommage de casse
+# est différé : le fichier finit son renommage, aucun __rename_tmp_* ne survit
+# ---------------------------------------------------------------------------
+
+def test_sigint_entre_les_etapes_aucun_orphelin(tmp_path, monkeypatch):
+    a = touch(tmp_path / "a.JPG", b"un")
+    b = touch(tmp_path / "b.JPG", b"deux")
+    modifs = [forge(a, "a.jpg", True, tmp_path), forge(b, "b.jpg", True, tmp_path)]
+    vrai = corr._rename_no_overwrite
+    appels = []
+
+    def signal_apres_etape_1(src, dst):
+        r = vrai(src, dst)
+        appels.append(dst)
+        if len(appels) == 1:
+            os.kill(os.getpid(), signal.SIGINT)
+        return r
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", signal_apres_etape_1)
+    with pytest.raises(corr.Interrompu) as interruption:
+        corr.appliquer(modifs)
+    assert noms(tmp_path) == ["a.jpg", "b.JPG"]
+    assert (tmp_path / "a.jpg").read_bytes() == b"un"
+    assert interruption.value.traites == 1 and interruption.value.resultats[0] == 1
+
+
+def test_sigterm_entre_les_etapes_aucun_orphelin(tmp_path):
+    a = touch(tmp_path / "a.JPG", b"un")
+    touch(tmp_path / "b.JPG", b"deux")
+    script = f"""
+import os, signal, sys
+sys.path.insert(0, {str(Path(corr.__file__).parent)!r})
+import corriger_extensions as corr
+from pathlib import Path
+racine = Path({str(tmp_path)!r})
+modifs = []
+for nom in ("a.JPG", "b.JPG"):
+    st = os.stat(racine / nom)
+    modifs.append(corr.Modif(nom, str(racine / nom), str(racine / nom.lower()), nom.lower(),
+                             True, st.st_dev, st.st_ino))
+vrai = corr._rename_no_overwrite
+appels = []
+def coupe(src, dst):
+    r = vrai(src, dst)
+    appels.append(dst)
+    if len(appels) == 1:
+        os.kill(os.getpid(), signal.SIGTERM)
+    return r
+corr._rename_no_overwrite = coupe
+corr.appliquer(modifs)
+"""
+    import subprocess
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True)
+    assert r.returncode == -signal.SIGTERM
+    assert noms(tmp_path) == ["a.jpg", "b.JPG"]
+    assert a.with_name("a.jpg").read_bytes() == b"un"

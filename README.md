@@ -30,7 +30,7 @@ Le déroulement est en une seule commande : SCAN (lecture des noms, liste figée
 - Les liens symboliques ne sont ni suivis en source, ni écrasés en cible. Une entrée symbolique, même cassée, qui occupe le nom cible provoque une abstention nette.
 - Aucun fichier existant n'est jamais écrasé. Le renommage passe par un appel système qui échoue si la cible existe déjà (`renameat2` avec `RENAME_NOREPLACE` sous Linux, `renamex_np` avec `RENAME_EXCL` sous macOS), ce qui ferme la fenêtre entre le test et le renommage. Un conflit avec un autre fichier ajoute un suffixe `_2`, `_3`…
 - Le renommage de casse pure passe par un nom temporaire avec retour arrière automatique, y compris si le programme est interrompu (Ctrl-C). Aucun nom temporaire `__rename_tmp_*` ne survit à une sortie rattrapable ; un tel reste laissé par un run non rattrapable (coupure de courant, `SIGKILL`) est signalé au run suivant, jamais renommé en silence.
-- Un Ctrl-C pendant l'application arrête proprement : le journal reçoit une section INTERROMPU qui dit combien de fichiers de la liste ont été traités, et les suivants ne sont pas touchés.
+- Un Ctrl-C (ou la fermeture du Terminal) pendant l'application n'interrompt jamais un fichier en cours de renommage : l'arrêt est différé jusqu'à la fin de ce fichier. Après un Ctrl-C, le journal reçoit une section INTERROMPU qui dit combien de fichiers de la liste ont été traités ; les suivants ne sont pas touchés.
 - Sur un système de fichiers sans renommage atomique (exFAT, partages réseau), l'outil retombe sur un test d'existence puis renommage et affiche un avertissement disant que la garantie anti-écrasement n'est plus atomique.
 - Relancer l'outil sur un dossier déjà corrigé ne fait rien (idempotence).
 
