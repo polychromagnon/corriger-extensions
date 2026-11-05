@@ -25,7 +25,7 @@
 > Une décision par ligne : qui la pose, la question, la proposition de l'équipage, puis la flèche où tu réponds (un mot suffit : oui, non, un chiffre, un choix). Le prochain run lit ta réponse, l'applique, retire la ligne, et grave en section 1 ce qui mérite de durer. **Section vide : rien ne t'attend.** Tant qu'une ligne reste sans réponse, le SPEC n'est pas figé et rien ne part en production.
 
 
-- [Claude, 2026-11-05] La liste d'extensions connues (42 : photos, vidéos, audio, pdf, doc, docx, txt, rtf, aae) laisse tels quels tous les autres types : `b.ZIP.ZIP`, `c.XLSX`, `f.csv.csv` ne sont pas corrigés. Or tu as dit le 2026-11-05 que l'outil sert pour tous les fichiers. Proposition : élargir la liste aux formats courants (archives, bureautique, web, données). →
+- [Claude, 2026-11-05, précisée par dev auto le 2026-11-05] La liste d'extensions connues (42 : photos, vidéos, audio, pdf, doc, docx, txt, rtf, aae) laisse tels quels tous les autres types : `b.ZIP.ZIP`, `c.XLSX`, `f.csv.csv` ne sont pas corrigés (vérifié sur le code v4.1.0). Or tu as dit le 2026-11-05 que l'outil sert pour tous les fichiers. Choix : (a) élargir la liste aux formats courants : archives zip, rar, 7z, tar, gz, dmg, iso ; bureautique xls, xlsx, ppt, pptx, odt, ods, odp, pages, numbers, key, epub ; web et données html, htm, csv, json, xml, md ; images svg, psd, avif ; (b) garder la liste actuelle (seuls photos, vidéos, audio et quelques documents sont corrigés) ; (c) fusionner tout doublon identique quelle que soit l'extension (couvre tout, mais `version.1.1` deviendrait `version.1`). Proposition : (a), en sachant qu'un nom comme `x.TAR.GZ` deviendrait `x.TAR.gz` (seule la dernière extension change de casse). →
 
 ## 4. Décidé sans toi — à revoir
 
@@ -49,9 +49,10 @@
 
 > Écrit par le dernier run, verdict en première ligne. Le détail des preuves vit dans `dossier/proof.md` ; ici, seulement ce qui t'oriente.
 
-**Verdict : SPEC prêt**
+**Verdict : bloqué, décision de périmètre (liste d'extensions, section 3), PO requis**
 
-- Fait : SPEC.md gelé, code v4.1.0 et tests au 2026-08-29 ; barre créée le 2026-11-05.
-- Reste : ship (rejouer et compléter les preuves du SPEC, attaque du code).
-- Bloqué : la question de la section 3 (liste d'extensions), qui t'attend.
-- En attente de ton feu vert : ta réponse à la section 3.
+- Intention non validée par un humain : essaie le produit sur un dossier-jouet pour vérifier qu'il fait ce que tu voulais.
+- Fait : SPEC.md gelé, code v4.1.0 et tests au 2026-08-29 ; barre créée le 2026-11-05. Run `/dev auto +++` du 2026-11-05 : les 43 tests existants passent (pytest, hors harnais) ; la question de la section 3 précisée avec trois choix ; ship non lancé, car (a) ou (c) changent le code et ferait refaire toutes les preuves.
+- Reste : ship (rejouer et compléter les preuves du SPEC, attaque du code au niveau +++), une fois la section 3 tranchée.
+- Bloqué : la question de la section 3, qui décide quels fichiers l'outil corrige.
+- En attente de ton feu vert : ta réponse à la section 3 (une lettre suffit), puis relance `/dev auto +++`.
