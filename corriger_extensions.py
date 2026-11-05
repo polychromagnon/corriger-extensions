@@ -166,7 +166,7 @@ Modif = namedtuple("Modif", "rel src cible cible_nom case_safe dev ino")
 
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1          # Linux renameat2
-_RENAME_EXCL = 0x00000002      # macOS renamex_np
+_RENAME_EXCL = 0x00000004      # macOS renamex_np ; 0x2 est RENAME_SWAP (xnu bsd/sys/stdio.h)
 
 _LIBC = None
 try:
@@ -188,6 +188,15 @@ _ERRNO_NON_ATOMIQUE = {
     errno.ENOSYS, errno.EINVAL, errno.ENOTSUP,
     getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
 }
+
+
+class Interrompu(KeyboardInterrupt):
+    """Ctrl-C pendant l'application : porte les résultats partiels jusqu'au journal."""
+
+    def __init__(self, resultats, traites: int):
+        super().__init__()
+        self.resultats = resultats
+        self.traites = traites
 
 
 class _AtomicIndisponible(Exception):
@@ -463,64 +472,73 @@ def appliquer(modifs: list[Modif]):
     ignores: list[tuple[str, str]] = []
     erreurs: list[tuple[str, str]] = []
     repli = False
+    traites = 0
+    try:
+        for m in modifs:
+            renommes, repli = _appliquer_un(m, renommes, ignores, erreurs, repli)
+            traites += 1
+    except KeyboardInterrupt as e:
+        raise Interrompu((renommes, ignores, erreurs, repli), traites) from e
+    return renommes, ignores, erreurs, repli
 
-    for m in modifs:
-        src = Path(m.src)
-        cible = Path(m.cible)
 
-        # --- Re-vérifications de sécurité (l'état a-t-il changé depuis le scan ?) ---
+def _appliquer_un(m: Modif, renommes: int, ignores, erreurs, repli: bool):
+    src = Path(m.src)
+    cible = Path(m.cible)
+
+    # --- Re-vérifications de sécurité (l'état a-t-il changé depuis le scan ?) ---
+    try:
+        if not src.exists() or src.is_symlink():
+            ignores.append((m.rel, "source disparue ou devenue un lien"))
+            return renommes, repli
+        st = src.stat()
+        if (st.st_dev, st.st_ino) != (m.dev, m.ino):
+            ignores.append((m.rel, "source remplacée depuis le scan"))
+            return renommes, repli
+    except OSError as e:
+        erreurs.append((m.rel, str(e)))
+        return renommes, repli
+
+    # --- Renommage ---
+    if m.case_safe:
+        # Changement de casse : passage par un nom temporaire, avec retour
+        # arrière si la 2e étape échoue OU si le process est interrompu.
+        temp = _temp_libre(src, m.cible_nom)
         try:
-            if not src.exists() or src.is_symlink():
-                ignores.append((m.rel, "source disparue ou devenue un lien"))
-                continue
-            st = src.stat()
-            if (st.st_dev, st.st_ino) != (m.dev, m.ino):
-                ignores.append((m.rel, "source remplacée depuis le scan"))
-                continue
+            repli |= _rename_no_overwrite(str(src), str(temp))       # étape 1
         except OSError as e:
             erreurs.append((m.rel, str(e)))
-            continue
+            return renommes, repli
+        try:
+            repli |= _rename_no_overwrite(str(temp), str(cible))     # étape 2
+        except FileExistsError:
+            os.rename(str(temp), str(src))                          # rollback, abstention
+            ignores.append((m.rel, "cible occupée (lien dur / apparue depuis le scan)"))
+            return renommes, repli
+        except OSError as e:
+            os.rename(str(temp), str(src))                          # rollback, erreur
+            erreurs.append((m.rel, str(e)))
+            return renommes, repli
+        except BaseException:
+            # Ctrl-C / SIGINT entre les deux étapes : on restaure avant de remonter.
+            try:
+                os.rename(str(temp), str(src))
+            except OSError:
+                pass
+            raise
+        renommes += 1
+    else:
+        try:
+            repli |= _rename_no_overwrite(str(src), str(cible))
+        except FileExistsError:
+            ignores.append((m.rel, "cible occupée depuis le scan"))
+            return renommes, repli
+        except OSError as e:
+            erreurs.append((m.rel, str(e)))
+            return renommes, repli
+        renommes += 1
 
-        # --- Renommage ---
-        if m.case_safe:
-            # Changement de casse : passage par un nom temporaire, avec retour
-            # arrière si la 2e étape échoue OU si le process est interrompu.
-            temp = _temp_libre(src, m.cible_nom)
-            try:
-                repli |= _rename_no_overwrite(str(src), str(temp))       # étape 1
-            except OSError as e:
-                erreurs.append((m.rel, str(e)))
-                continue
-            try:
-                repli |= _rename_no_overwrite(str(temp), str(cible))     # étape 2
-            except FileExistsError:
-                os.rename(str(temp), str(src))                          # rollback, abstention
-                ignores.append((m.rel, "cible occupée (lien dur / apparue depuis le scan)"))
-                continue
-            except OSError as e:
-                os.rename(str(temp), str(src))                          # rollback, erreur
-                erreurs.append((m.rel, str(e)))
-                continue
-            except BaseException:
-                # Ctrl-C / SIGINT entre les deux étapes : on restaure avant de remonter.
-                try:
-                    os.rename(str(temp), str(src))
-                except OSError:
-                    pass
-                raise
-            renommes += 1
-        else:
-            try:
-                repli |= _rename_no_overwrite(str(src), str(cible))
-            except FileExistsError:
-                ignores.append((m.rel, "cible occupée depuis le scan"))
-                continue
-            except OSError as e:
-                erreurs.append((m.rel, str(e)))
-                continue
-            renommes += 1
-
-    return renommes, ignores, erreurs, repli
+    return renommes, repli
 
 
 # ----------------------------------------------------------------------------
@@ -608,11 +626,16 @@ def ecrire_journal_prevu(journal: Path, racine, modifs, deja_ok, erreurs_acces, 
                 f.write(f"{msg}\n")
 
 
-def ajouter_resultats(journal: Path, renommes, ignores, erreurs, repli) -> None:
+def ajouter_resultats(journal: Path, renommes, ignores, erreurs, repli, interruption=None) -> None:
     with journal.open("a", encoding="utf-8") as f:
         f.write("\n\n" + "=" * 78 + "\n")
         f.write(f"RÉSULTATS — {datetime.now():%Y-%m-%d %H:%M:%S}\n")
         f.write("=" * 78 + "\n")
+        if interruption:
+            traites, total = interruption
+            f.write(f"INTERROMPU (Ctrl-C) après {traites} fichier(s) traité(s) sur {total}, dans "
+                    "l'ordre de la liste ci-dessus. Le fichier en cours au moment de l'arrêt "
+                    "peut avoir été renommé ou non ; les suivants n'ont pas été touchés.\n")
         f.write(f"Renommés avec succès : {renommes}\n")
         if repli:
             f.write(f"\n{AVERTISSEMENT_NON_ATOMIQUE}\n")
@@ -741,7 +764,20 @@ def main() -> None:
         return
 
     # 4) Application (uniquement sur la liste figée)
-    renommes, ignores, erreurs, repli = appliquer(modifs)
+    try:
+        renommes, ignores, erreurs, repli = appliquer(modifs)
+    except Interrompu as e:
+        if journal:
+            try:
+                ajouter_resultats(journal, *e.resultats, interruption=(e.traites, len(modifs)))
+            except OSError:
+                pass
+        print(f"\n⛔ Interrompu après {e.traites} fichier(s) traité(s) sur {len(modifs)} "
+              f"({e.resultats[0]} renommé(s)) ; le fichier en cours peut avoir été renommé ou non, "
+              "les suivants n'ont pas été touchés.")
+        if journal:
+            print(f"📝 Journal complet : {journal}")
+        sys.exit(130)
     if journal:
         try:
             ajouter_resultats(journal, renommes, ignores, erreurs, repli)

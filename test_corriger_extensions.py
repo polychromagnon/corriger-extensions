@@ -6,6 +6,7 @@ chemin complet sur FS insensible à la casse) est déclaré tel quel dans le SPE
 jamais simulé.
 """
 
+import ctypes
 import errno
 import hashlib
 import os
@@ -525,3 +526,172 @@ def test_affichage_integral_sans_journal(capsys):
     assert out.count("→ ") == 300                       # les 300 lignes, aucune troncature
     assert "non affichés" not in out
     assert "journal ci-dessus" not in out
+
+
+# ---------------------------------------------------------------------------
+# §3 — macOS : renamex_np reçoit RENAME_EXCL (0x4), jamais RENAME_SWAP (0x2)
+# Valeurs : xnu bsd/sys/stdio.h (RENAME_SWAP 0x00000002, RENAME_EXCL 0x00000004).
+# ---------------------------------------------------------------------------
+
+class _FauxLibSystem:
+    RENAME_EXCL = 0x00000004
+
+    def __init__(self):
+        self.drapeaux = []
+
+    def renamex_np(self, src, dst, drapeaux):
+        self.drapeaux.append(drapeaux)
+        if drapeaux != self.RENAME_EXCL:
+            ctypes.set_errno(errno.ENOENT)              # RENAME_SWAP exige une cible existante
+            return -1
+        if os.path.lexists(os.fsdecode(dst)):
+            ctypes.set_errno(errno.EEXIST)
+            return -1
+        os.rename(os.fsdecode(src), os.fsdecode(dst))
+        return 0
+
+
+def test_macos_renamex_np_rename_excl(tmp_path, monkeypatch):
+    libc = _FauxLibSystem()
+    monkeypatch.setattr(corr, "_LIBC", libc)
+    monkeypatch.setattr(corr.sys, "platform", "darwin")
+    touch(tmp_path / "a.JPG.JPG", b"un")
+    touch(tmp_path / "b.ZIP.ZIP", b"deux")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 2 and r["erreurs"] == [] and r["repli"] is False
+    assert noms(tmp_path) == ["a.jpg", "b.zip"]
+    assert libc.drapeaux == [0x4, 0x4]
+
+
+def test_macos_cible_apparue_jamais_echangee(tmp_path, monkeypatch):
+    monkeypatch.setattr(corr, "_LIBC", _FauxLibSystem())
+    monkeypatch.setattr(corr.sys, "platform", "darwin")
+    touch(tmp_path / "a.JPG.JPG", b"source")
+    modifs = corr.scanner(tmp_path)[0]
+    touch(tmp_path / "a.jpg", b"preexistant")
+    renommes, ignores, erreurs, _ = corr.appliquer(modifs)
+    assert renommes == 0 and len(ignores) == 1
+    assert (tmp_path / "a.jpg").read_bytes() == b"preexistant"
+    assert (tmp_path / "a.JPG.JPG").read_bytes() == b"source"
+
+
+# ---------------------------------------------------------------------------
+# §3 — pas de descente dans les paquets macOS, Library, corbeilles
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("dossier", [
+    "X.app", "P.photoslibrary", "Y.pages", "Library", ".Trash", ".Trashes", "Z.APP",
+])
+def test_pas_de_descente_dans_zones_protegees(tmp_path, dossier):
+    (tmp_path / dossier).mkdir()
+    touch(tmp_path / dossier / "a.JPG.JPG")
+    touch(tmp_path / "b.JPG.JPG")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 1
+    assert noms(tmp_path / dossier) == ["a.JPG.JPG"]
+    assert (tmp_path / "b.jpg").exists()
+
+
+# ---------------------------------------------------------------------------
+# §3 — journal jamais sous la racine scannée (cwd et home sous la racine)
+# ---------------------------------------------------------------------------
+
+def test_journal_jamais_sous_racine_cwd_dedans(tmp_path, monkeypatch):
+    racine = tmp_path / "racine"
+    (racine / "sous").mkdir(parents=True)
+    ailleurs = tmp_path / "ailleurs"
+    ailleurs.mkdir()
+    monkeypatch.chdir(racine / "sous")
+    monkeypatch.setenv("HOME", str(racine))
+    monkeypatch.setattr(corr.tempfile, "tempdir", str(ailleurs))
+    journal, _ = corr.choisir_journal(racine.resolve())
+    assert journal is not None and journal.parent == ailleurs.resolve()
+    assert os.listdir(racine) == ["sous"] and os.listdir(racine / "sous") == []
+
+
+def test_journal_absent_si_tout_sous_racine(tmp_path, monkeypatch):
+    racine = tmp_path / "racine"
+    (racine / "sous").mkdir(parents=True)
+    monkeypatch.chdir(racine / "sous")
+    monkeypatch.setenv("HOME", str(racine))
+    monkeypatch.setattr(corr.tempfile, "tempdir", str(racine / "sous"))
+    assert corr.choisir_journal(racine.resolve()) == (None, False)
+    assert os.listdir(racine) == ["sous"] and os.listdir(racine / "sous") == []
+
+
+# ---------------------------------------------------------------------------
+# §3 — repli non atomique : une cible apparue après le scan n'est jamais écrasée
+# ---------------------------------------------------------------------------
+
+def test_repli_cible_apparue_jamais_ecrasee(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORREXT_FORCE_NON_ATOMIC", "1")
+    touch(tmp_path / "a.JPG.JPG", b"source")
+    modifs = corr.scanner(tmp_path)[0]
+    touch(tmp_path / "a.jpg", b"preexistant")
+    renommes, ignores, _, _ = corr.appliquer(modifs)
+    assert renommes == 0 and len(ignores) == 1
+    assert (tmp_path / "a.jpg").read_bytes() == b"preexistant"
+    assert (tmp_path / "a.JPG.JPG").read_bytes() == b"source"
+
+
+# ---------------------------------------------------------------------------
+# §2/§3 — deux fichiers du même lot visent le même nom → suffixe, aucune perte
+# ---------------------------------------------------------------------------
+
+def test_conflit_dans_le_lot(tmp_path):
+    touch(tmp_path / "a.JPG.JPG", b"un")
+    touch(tmp_path / "a.jpg.jpg", b"deux")
+    touch(tmp_path / "x.FOO.FOO", b"trois")
+    touch(tmp_path / "x.foo.foo", b"quatre")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 4
+    assert noms(tmp_path) == ["a.jpg", "a_2.jpg", "x.foo", "x_2.foo"]
+    contenus = sorted((tmp_path / n).read_bytes() for n in noms(tmp_path))
+    assert contenus == sorted([b"un", b"deux", b"trois", b"quatre"])
+
+
+# ---------------------------------------------------------------------------
+# §3 — renommage de casse : un nom temporaire déjà pris n'est jamais écrasé
+# ---------------------------------------------------------------------------
+
+def test_temp_deja_pris_jamais_ecrase(tmp_path):
+    src = touch(tmp_path / "a.JPG", b"photo")
+    touch(tmp_path / f"{corr.PREFIXE_TMP}a.jpg", b"orphelin")
+    m = forge(src, "a.jpg", True, tmp_path)
+    renommes, _, erreurs, _ = corr.appliquer([m])
+    assert renommes == 1 and erreurs == []
+    assert (tmp_path / "a.jpg").read_bytes() == b"photo"
+    assert (tmp_path / f"{corr.PREFIXE_TMP}a.jpg").read_bytes() == b"orphelin"
+    assert len(noms(tmp_path)) == 2
+
+
+# ---------------------------------------------------------------------------
+# §2 pipeline — Ctrl-C pendant l'application : journal complété, sortie propre
+# ---------------------------------------------------------------------------
+
+def test_interruption_application_journal(tmp_path, monkeypatch, capsys):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    for i in range(5):
+        touch(racine / f"f{i}.JPG")
+    journal = tmp_path / "rename_log_test.txt"
+    vrai = corr._rename_no_overwrite
+    appels = []
+
+    def coupe_au_troisieme(src, dst):
+        appels.append(src)
+        if len(appels) == 3:
+            raise KeyboardInterrupt
+        return vrai(src, dst)
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", coupe_au_troisieme)
+    monkeypatch.setattr(corr, "choisir_journal", lambda r: (journal, False))
+    monkeypatch.setattr("sys.argv", ["prog", str(racine), "--oui"])
+    with pytest.raises(SystemExit) as fin:
+        corr.main()
+    assert fin.value.code == 130
+    assert noms(racine) == ["f0.jpg", "f1.jpg", "f2.JPG", "f3.JPG", "f4.JPG"]
+    texte = journal.read_text(encoding="utf-8")
+    assert "INTERROMPU" in texte and "2 fichier(s) traité(s) sur 5" in texte
+    assert "Renommés avec succès : 2" in texte
+    assert "Interrompu" in capsys.readouterr().out
