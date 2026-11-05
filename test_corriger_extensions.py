@@ -2043,3 +2043,23 @@ def test_date_d_acces_du_dossier_remise_aussi(tmp_path):
 @pytest.mark.parametrize("marque", [" ", " ", "‎", "‏", "؜"])
 def test_autres_marques_de_sens_echappees(marque):
     assert corr._lisible(f"a{marque}b") == f"a\\u{ord(marque):04x}b"
+
+
+def test_retour_arriere_impossible_apres_cible_occupee(tmp_path, monkeypatch):
+    src = touch(tmp_path / "a.JPG", b"photo")
+    vrai = corr._rename_no_overwrite
+
+    def etape_2_occupee(s, d):
+        if d.endswith("/a.jpg"):
+            raise FileExistsError(errno.EEXIST, "occupé", d)
+        return vrai(s, d)
+
+    def rename_refuse(s, d):
+        raise OSError(errno.ENODEV, "plus de disque", s)
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", etape_2_occupee)
+    monkeypatch.setattr(corr.os, "rename", rename_refuse)
+    renommes, ignores, erreurs, _ = corr.appliquer([forge(src, "a.jpg", True, tmp_path)])
+    assert renommes == 0 and ignores == [] and len(erreurs) == 1
+    assert erreurs[0][0] == "a.JPG" and erreurs[0][1].startswith(
+        f"retour arrière impossible, fichier resté sous {corr.PREFIXE_TMP}a.jpg : [Errno 19] plus de disque")
