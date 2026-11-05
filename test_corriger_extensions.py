@@ -231,7 +231,12 @@ def test_identite_changee_abstention(tmp_path):
     bad = corr.Modif(modif.rel, modif.src, modif.cible, modif.cible_nom,
                      False, modif.dev, modif.ino + 999)   # ino faussé
     renommes, ignores, erreurs, _ = corr.appliquer([bad])
-    assert renommes == 0 and ignores and (tmp_path / "x.JPG").exists()
+    assert renommes == 0 and ignores == [("x.JPG", "source remplacée depuis le scan")]
+    assert (tmp_path / "x.JPG").exists()
+    autre_disque = corr.Modif(modif.rel, modif.src, modif.cible, modif.cible_nom,
+                              False, modif.dev + 1, modif.ino)   # même inode, autre disque
+    renommes, ignores, _, _ = corr.appliquer([autre_disque])
+    assert renommes == 0 and ignores == [("x.JPG", "source remplacée depuis le scan")]
 
 
 # ---------------------------------------------------------------------------
@@ -1129,6 +1134,7 @@ def test_compagnons_et_liens_signales(tmp_path, monkeypatch, capsys):
     (racine / "raccourci").symlink_to(racine / "IMG.JPG.JPG")
     touch(racine / "b.JPG")
     touch(racine / "b.JPG.xmp", b"b")
+    touch(racine / "b.xmp", b"radical inchange")
     journal = tmp_path / "rename_log_test.txt"
     assert _lancer_main(racine, journal, monkeypatch, "--oui") == 0
     sortie = capsys.readouterr().out
@@ -1137,9 +1143,11 @@ def test_compagnons_et_liens_signales(tmp_path, monkeypatch, capsys):
     for attendu in ["IMG.JPG.JPG.xmp → vise IMG.JPG.JPG", "IMG.JPG.xmp → vise IMG.JPG.JPG",
                     "raccourci → vise IMG.JPG.JPG", "b.JPG.xmp → vise b.JPG"]:
         assert attendu in section and attendu in sortie
-    assert "b.xmp" not in section                         # casse seule : le radical ne change pas
+    assert "b.xmp →" not in section                       # casse seule : le radical ne change pas
+    assert ("IMG.JPG.xmp → vise IMG.JPG.JPG (compagnon Lightroom (même radical))\n"
+            in section + "\n")
     assert sorted(n for n in os.listdir(racine)) == sorted(
-        ["IMG.jpg", "IMG.JPG.JPG.xmp", "IMG.JPG.xmp", "raccourci", "b.jpg", "b.JPG.xmp"])
+        ["IMG.jpg", "IMG.JPG.JPG.xmp", "IMG.JPG.xmp", "raccourci", "b.jpg", "b.JPG.xmp", "b.xmp"])
     assert os.path.islink(racine / "raccourci")
 
 
@@ -1204,7 +1212,7 @@ def test_laisses_de_cote_longue_liste(tmp_path, monkeypatch, capsys, avec_journa
     lignes = [l for l in sortie.splitlines() if l.strip().startswith("· .cache")]
     assert len(lignes) == (nombre if listes else 0)
     if not listes:
-        assert "liste complète dans le journal" in sortie
+        assert "\n      (liste complète dans le journal)\n" in sortie
         assert journal.read_text(encoding="utf-8").count("(dossier caché)") == nombre
 
 
@@ -1412,9 +1420,9 @@ def test_apercu_tronque_ou_integral(tmp_path, monkeypatch, capsys, n, options, a
     sortie = capsys.readouterr().out
     assert len([l for l in sortie.splitlines() if l.startswith("      → f")]) == attendu_lignes
     if tronque:
-        assert f"  … +{n - 40} autre(s) non affichés ici." in sortie
-        assert "  Liste intégrale dans le journal ci-dessus (ouvre-le pour tout vérifier)." in sortie
-        assert "  (Relance avec --tout pour tout afficher à l'écran.)" in sortie
+        assert f"\n  … +{n - 40} autre(s) non affichés ici.\n" in sortie
+        assert "\n  Liste intégrale dans le journal ci-dessus (ouvre-le pour tout vérifier).\n" in sortie
+        assert "\n  (Relance avec --tout pour tout afficher à l'écran.)\n" in sortie
     else:
         assert "autre(s) non affichés" not in sortie
 
@@ -1430,7 +1438,7 @@ def test_journal_impossible_a_ecrire_liste_integrale(tmp_path, monkeypatch, caps
     assert _lancer_main(racine, tmp_path / "j.txt", monkeypatch, "--dry-run") == 0
     sortie = capsys.readouterr().out
     assert "⚠️  Journal non écrit ([Errno 28] plus de place) ; liste affichée en entier ci-dessous." in sortie
-    assert "📝 Journal non écrit (aucun emplacement hors racine) : liste affichée en entier ci-dessous." in sortie
+    assert "\n📝 Journal non écrit (aucun emplacement hors racine) : liste affichée en entier ci-dessous.\n" in sortie
     assert len([l for l in sortie.splitlines() if l.startswith("      → f")]) == corr.SEUIL_APERCU + 1
 
 
@@ -1544,7 +1552,8 @@ def test_message_interruption(tmp_path, monkeypatch, capsys):
     assert ("\n⛔ Interrompu (Ctrl-C) après 2 fichier(s) traité(s) sur 5 (2 renommé(s)) ; "
             "les suivants n'ont pas été touchés.\n") in sortie
     assert f"📝 Journal complet : {j}\n" in sortie
-    assert "INTERROMPU (Ctrl-C) après 2 fichier(s) traité(s) sur 5" in j.read_text(encoding="utf-8")
+    assert ("\nINTERROMPU (Ctrl-C) après 2 fichier(s) traité(s) sur 5, dans l'ordre de la liste ci-dessus ; "
+            "les suivants n'ont pas été touchés.\n") in j.read_text(encoding="utf-8")
 
 
 def test_source_disparue_ignoree(tmp_path):
@@ -1699,3 +1708,161 @@ def test_deux_renommages_de_casse_comptes(tmp_path):
     modifs = [forge(touch(tmp_path / f"{x}.JPG"), f"{x}.jpg", True, tmp_path) for x in "ab"]
     renommes, _, erreurs, _ = corr.appliquer(modifs)
     assert renommes == 2 and erreurs == []
+
+
+
+# ---------------------------------------------------------------------------
+# Comblement, deuxième passe de mutation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("premier", [".DS_Store", "0-deja-correct.jpg", "0rename_log_vieux.txt"])
+def test_un_fichier_ecarte_ne_stoppe_pas_le_dossier(tmp_path, premier):
+    touch(tmp_path / premier.replace("0rename", "rename"))
+    touch(tmp_path / "b.JPG.JPG")
+    touch(tmp_path / "c.ZIP.ZIP")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 2
+    assert {"b.jpg", "c.zip"} <= set(noms(tmp_path))
+
+
+def test_fichiers_caches_ni_comptes_ni_touches(tmp_path):
+    touch(tmp_path / ".DS_Store")
+    touch(tmp_path / "._photo.JPG.JPG")
+    modifs, deja_ok, _, _ = corr.scanner(tmp_path)
+    assert modifs == [] and deja_ok == 0
+
+
+def test_cible_prise_par_un_lien_ne_stoppe_pas_le_dossier(tmp_path):
+    touch(tmp_path / "a.JPG")
+    (tmp_path / "a.jpg").symlink_to(tmp_path / "nulle-part")
+    touch(tmp_path / "b.JPG.JPG")
+    assert scan_apply(tmp_path)["renommes"] == 1
+    assert (tmp_path / "b.jpg").exists()
+
+
+def test_dossier_illisible_ne_stoppe_pas_le_scan(tmp_path, monkeypatch, capsys):
+    racine = tmp_path / "racine"
+    for d in ["a-verrouille", "b-libre"]:
+        (racine / d).mkdir(parents=True)
+        touch(racine / d / "x.JPG.JPG")
+    vrai = os.scandir
+
+    def scandir(chemin):
+        if str(chemin).endswith("a-verrouille"):
+            raise PermissionError(errno.EACCES, "Permission denied", str(chemin))
+        return vrai(chemin)
+
+    monkeypatch.setattr(corr.os, "scandir", scandir)
+    j = tmp_path / "rename_log_test.txt"
+    assert _lancer_main(racine, j, monkeypatch, "--oui") == 1
+    assert noms(racine / "b-libre") == ["x.jpg"]
+    message = f"[Errno 13] Permission denied: '{racine / 'a-verrouille'}'"
+    sortie = capsys.readouterr().out
+    assert "\n🚫 Dossiers inaccessibles  : 1 (non examinés)\n" in sortie
+    assert (f"\nDOSSIERS INACCESSIBLES (non examinés) — 1\n{'-' * 78}\n{message}\n"
+            in j.read_text(encoding="utf-8"))
+
+
+def test_detection_casse_sur_disque_insensible(tmp_path, monkeypatch):
+    """Simule APFS : a.jpg « existe » et c'est le même fichier que a.JPG."""
+    touch(tmp_path / "a.JPG")
+    vrai = os.path.lexists
+    monkeypatch.setattr(corr.os.path, "lexists",
+                        lambda p: str(p) == str(tmp_path / "a.jpg") or vrai(p))
+    monkeypatch.setattr(corr, "meme_fichier", lambda a, b: True)
+    modifs = corr.scanner(tmp_path)[0]
+    assert [(m.cible_nom, m.case_safe) for m in modifs] == [("a.jpg", True)]
+
+
+def test_compagnon_qui_est_lui_meme_a_renommer_non_signale(tmp_path):
+    for n in ["a.jpg.jpg", "a.jpg.jpg.jpg", "a.XMP.XMP", "a.XMP.xmp"]:
+        touch(tmp_path / n)
+    laisses = []
+    modifs = corr.scanner(tmp_path, laisses)[0]
+    assert len(modifs) == 4
+    assert corr.compagnons(modifs, laisses) == []
+
+
+def test_compagnons_dans_un_sous_dossier(tmp_path):
+    (tmp_path / "album").mkdir()
+    for n in ["IMG.JPG.JPG", "IMG.JPG.JPG.xmp", "IMG.JPG.xmp"]:
+        touch(tmp_path / "album" / n)
+    laisses = []
+    modifs = corr.scanner(tmp_path, laisses)[0]
+    assert corr.compagnons(modifs, laisses) == [
+        ("album/IMG.JPG.JPG.xmp", "album/IMG.JPG.JPG", "compagnon nommé d'après le nom complet"),
+        ("album/IMG.JPG.xmp", "album/IMG.JPG.JPG", "compagnon Lightroom (même radical)"),
+    ]
+
+
+def test_compte_des_laisses_par_raison(tmp_path, monkeypatch, capsys):
+    for d in [".a", ".b", "Library"]:
+        (tmp_path / d).mkdir()
+    touch(tmp_path / "x.JPG.JPG")
+    _lancer_main(tmp_path, None, monkeypatch, "--dry-run")
+    assert "🙈 Laissés de côté (1 dossier Library ou corbeille, 2 dossier caché) : 3\n" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("genre", ["laisses", "compagnons"])
+def test_tout_et_journal_pour_les_listes(tmp_path, monkeypatch, capsys, genre):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    n = corr.SEUIL_LISTES + 1
+    for i in range(n):
+        if genre == "laisses":
+            (racine / f".d{i}").mkdir()
+        else:
+            touch(racine / f"f{i:02d}.JPG.JPG")
+            touch(racine / f"f{i:02d}.JPG.JPG.xmp")
+    j = tmp_path / "rename_log_test.txt"
+
+    def lignes_listees(sortie):
+        if genre == "laisses":
+            return sum(1 for l in sortie.splitlines() if l.strip().startswith("· .d"))
+        return sum(1 for l in sortie.splitlines() if "→ vise" in l)
+
+    _lancer_main(racine, j, monkeypatch, "--dry-run")
+    assert lignes_listees(capsys.readouterr().out) == 0
+    _lancer_main(racine, j, monkeypatch, "--dry-run", "--tout")
+    assert lignes_listees(capsys.readouterr().out) == n
+
+
+def test_nom_non_utf8_dans_les_resultats(tmp_path, monkeypatch):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    fd = os.open(os.fsencode(racine) + b"/caf\xe9.JPG.JPG", os.O_CREAT | os.O_WRONLY, 0o644)
+    os.close(fd)
+
+    def erreur_io(src, dst):
+        raise OSError(errno.EIO, "erreur", dst)
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", erreur_io)
+    j = tmp_path / "rename_log_test.txt"
+    assert _lancer_main(racine, j, monkeypatch, "--oui") == 1
+    resultats = j.read_text(encoding="utf-8").split("RÉSULTATS", 1)[1]
+    assert "caf\\udce9.JPG.JPG : [Errno 5] erreur" in resultats
+
+
+def test_main_invite_avec_le_nombre(tmp_path, monkeypatch):
+    touch(tmp_path / "a.JPG.JPG")
+    touch(tmp_path / "b.ZIP.ZIP")
+    vus = []
+    monkeypatch.setattr("sys.stdin", _StdinTTY())
+    monkeypatch.setattr("builtins.input", lambda invite="": vus.append(invite) or "n")
+    _lancer_main(tmp_path, None, monkeypatch)
+    assert vus == ["\n➡️  Appliquer ces 2 renommage(s) ? [o/N] "]
+
+
+def test_temp_deja_pris_reste_dans_le_dossier(tmp_path, monkeypatch):
+    src = touch(tmp_path / "a.JPG", b"photo")
+    touch(tmp_path / f"{corr.PREFIXE_TMP}a.jpg", b"orphelin")
+    vus = []
+    vrai = corr._rename_no_overwrite
+
+    def espion(s, d):
+        vus.append(d)
+        return vrai(s, d)
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", espion)
+    corr.appliquer([forge(src, "a.jpg", True, tmp_path)])
+    assert vus[0] == str(tmp_path / f"{corr.PREFIXE_TMP}a_2.jpg")
