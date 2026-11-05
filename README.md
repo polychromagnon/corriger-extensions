@@ -47,8 +47,31 @@ python3 corriger_extensions.py "/Volumes/MonArchive" --tout      # affiche toute
 python3 corriger_extensions.py "/Volumes/MonArchive" --oui       # non interactif, applique sans demander
 ```
 
-## Tests
+## Tests (Linux)
+
+La suite automatique est prévue pour Linux : elle crée des noms qui ne diffèrent que par la casse (impossible sur un disque Mac insensible à la casse), utilise `/dev/shm` comme second volume et place ses dossiers d'essai dans `/tmp`, que l'outil refuse sur Mac (zone système `/private`). Sur Mac, elle se déclare sautée.
 
 ```
-python3 -m pytest test_corriger_extensions.py
+python3 -m venv .venv
+.venv/bin/python -m pip install pytest
+.venv/bin/python -m pytest -q test_corriger_extensions.py
 ```
+
+## Vérification sur ton Mac
+
+Ce que la suite Linux ne peut pas prouver (date de création, tags Finder, renommage de casse sur APFS, appel système macOS), cet essai le montre sur un dossier jetable. Depuis le dossier du projet, dans le Terminal :
+
+```
+mkdir ~/Desktop/essai-corrext
+touch ~/Desktop/essai-corrext/{photo.JPG.JPG,clip.MP4,b.ZIP.ZIP,c.XLSX,version.1.1,Notes.IMPORTANT}
+```
+
+Dans le Finder, mets une étiquette de couleur sur `photo.JPG.JPG` et sur `clip.MP4`. Puis :
+
+```
+stat -f '%N  créé %SB  modifié %Sm' ~/Desktop/essai-corrext/*
+python3 corriger_extensions.py ~/Desktop/essai-corrext --oui
+stat -f '%N  créé %SB  modifié %Sm' ~/Desktop/essai-corrext/*
+```
+
+Attendu : aucune ligne d'erreur ; les fichiers s'appellent maintenant `photo.jpg`, `clip.mp4`, `b.zip`, `c.xlsx`, `version.1.1` et `Notes.IMPORTANT` ; les dates « créé » et « modifié » de chaque fichier sont les mêmes avant et après ; les étiquettes sont toujours visibles dans le Finder. Même essai possible sur un disque externe exFAT en remplaçant `~/Desktop/essai-corrext` par un dossier de ce disque : l'outil y affiche alors l'avertissement de renommage non atomique. Supprime le dossier d'essai ensuite.

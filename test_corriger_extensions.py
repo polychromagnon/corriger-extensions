@@ -10,11 +10,17 @@ import ctypes
 import errno
 import hashlib
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
 import corriger_extensions as corr
+
+# Suite prévue pour Linux (FS sensible à la casse, /dev/shm, os.setxattr, dossier
+# temporaire hors des zones système). Sur Mac : procédure manuelle du README.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "darwin", reason="suite Linux ; sur Mac, suivre la vérification manuelle du README")
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +497,7 @@ def test_racine_autorisee(chemin):
 # §3/§4 — journal hors volume, jamais sous la racine, même liste que l'aperçu
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not os.path.isdir("/dev/shm"), reason="exige /dev/shm (volume distinct)")
 def test_journal_hors_volume(tmp_path):
     racine = Path("/dev/shm") / f"corrext_test_{os.getpid()}"
     racine.mkdir(parents=True, exist_ok=True)
@@ -843,3 +850,51 @@ def test_choisir_journal_ne_detruit_pas_un_homonyme(tmp_path, monkeypatch):
     journal, _ = corr.choisir_journal(racine.resolve())
     assert homonyme.read_text() == "journal précédent"
     assert journal is not None and journal != homonyme.resolve()
+
+
+# ---------------------------------------------------------------------------
+# §3 — racine protégée reconnue quelle que soit la casse tapée (APFS insensible)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("chemin", [
+    "/library", "/system", "/applications", "/USR/local", "/Private/var",
+    "/Users/x/library", "/Users/x/.trash/vieux", "/Volumes/A/Photos.PHOTOSLIBRARY/originals",
+    "/Volumes/A/$recycle.bin",
+])
+def test_racine_interdite_sans_casse(chemin):
+    assert corr.est_racine_interdite(Path(chemin)) is True
+
+
+# ---------------------------------------------------------------------------
+# §3 — journal jamais sous la racine, même désignée par un autre chemin
+# (casse différente sur APFS ; ici, un lien symbolique vers la racine)
+# ---------------------------------------------------------------------------
+
+def test_journal_jamais_sous_racine_autre_chemin(tmp_path, monkeypatch):
+    racine = tmp_path / "Archive"
+    (racine / "sous").mkdir(parents=True)
+    alias = tmp_path / "archive-alias"
+    alias.symlink_to(racine)
+    ailleurs = tmp_path / "ailleurs"
+    ailleurs.mkdir()
+    monkeypatch.chdir(racine / "sous")
+    monkeypatch.setenv("HOME", str(ailleurs))
+    monkeypatch.setattr(corr.tempfile, "tempdir", str(ailleurs))
+    journal, _ = corr.choisir_journal(alias)
+    assert journal is not None and journal.parent == ailleurs.resolve()
+    assert os.listdir(racine / "sous") == []
+
+
+# ---------------------------------------------------------------------------
+# §2 — renommage de casse d'un nom long (243 à 255 octets) : le nom temporaire
+# ne doit pas dépasser la limite du système de fichiers
+# ---------------------------------------------------------------------------
+
+def test_casse_nom_long(tmp_path):
+    nom = "é" * 120 + ".JPG"                              # 244 octets
+    src = touch(tmp_path / nom, b"photo")
+    m = forge(src, "é" * 120 + ".jpg", True, tmp_path)
+    renommes, _, erreurs, _ = corr.appliquer([m])
+    assert erreurs == [] and renommes == 1
+    assert noms(tmp_path) == ["é" * 120 + ".jpg"]
+    assert (tmp_path / ("é" * 120 + ".jpg")).read_bytes() == b"photo"

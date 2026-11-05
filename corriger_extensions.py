@@ -148,6 +148,7 @@ SEUIL_APERCU = 200
 
 # Préfixe des noms temporaires du renommage de casse en deux temps.
 PREFIXE_TMP = "__rename_tmp_"
+NOM_MAX_OCTETS = 255            # limite d'un nom sur APFS, HFS+, ext4
 
 
 # Une ligne de renommage prévue. Figée au scan, exécutée telle quelle.
@@ -345,16 +346,17 @@ def est_racine_interdite(racine: Path) -> bool:
     en descendant. Un dossier situé DANS un paquet ou une corbeille l'est aussi
     (Photos.photoslibrary/originals, ~/.Trash/x).
     """
-    s = str(racine)
+    # Comparaisons sans casse : sur APFS (insensible à la casse), ~/library EST ~/Library.
+    s = str(racine).lower()
     if s == "/":
         return True
-    if any(s == p or s.startswith(p + "/") for p in RACINES_INTERDITES):
+    if any(s == p.lower() or s.startswith(p.lower() + "/") for p in RACINES_INTERDITES):
         return True
-    if racine.name in NOMS_DIR_IGNORES:
+    if racine.name.lower() in {n.lower() for n in NOMS_DIR_IGNORES}:
         return True
     for partie in racine.parts:
         if Path(partie).suffix.lower() in EXT_DOSSIERS_OPAQUES \
-           or partie in (".Trash", ".Trashes") \
+           or partie.lower() in (".trash", ".trashes") \
            or partie.lower() in NOMS_DIR_IGNORES_SANS_CASSE:
             return True
     return False
@@ -463,7 +465,10 @@ def _rel(src: Path, racine: Path) -> str:
 # ----------------------------------------------------------------------------
 
 def _temp_libre(src: Path, cible_nom: str) -> Path:
-    temp = src.with_name(f"{PREFIXE_TMP}{cible_nom}")
+    nom = f"{PREFIXE_TMP}{cible_nom}"
+    if len(os.fsencode(nom)) > NOM_MAX_OCTETS:
+        nom = f"{PREFIXE_TMP}{os.lstat(src).st_ino}"   # nom long : le préfixe ne doit pas le faire refuser
+    temp = src.with_name(nom)
     if os.path.lexists(temp):
         temp = _nom_libre(temp, set())
     return temp
@@ -582,7 +587,7 @@ def choisir_journal(racine: Path):
             base_res = base.resolve()
         except OSError:
             continue
-        if base_res == racine or racine in base_res.parents:
+        if base_res == racine or racine in base_res.parents or _est_sous(base_res, racine):
             continue                                  # jamais sous la racine scannée
         cand = base_res / nom
         if not _inscriptible(cand):
@@ -601,6 +606,25 @@ def choisir_journal(racine: Path):
     if meme_volume:
         return meme_volume, True
     return None, False
+
+
+def _est_sous(chemin: Path, racine: Path) -> bool:
+    """chemin est-il la racine ou en dessous, par identité de dossier (st_dev, st_ino) ?
+
+    Une comparaison de chaînes rate ~/pictures face à ~/Pictures sur APFS.
+    """
+    try:
+        st = racine.stat()
+    except OSError:
+        return False
+    for p in (chemin, *chemin.parents):
+        try:
+            s = p.stat()
+        except OSError:
+            continue
+        if (s.st_dev, s.st_ino) == (st.st_dev, st.st_ino):
+            return True
+    return False
 
 
 def _inscriptible(cand: Path) -> bool:

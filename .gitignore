@@ -4,3 +4,4 @@ __pycache__/
 proof.lock
 proof.md
 verify-test.log
+rename_log_*.txt
