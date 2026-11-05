@@ -480,13 +480,15 @@ def appliquer(modifs: list[Modif]):
     QUE sur la liste figée ; il s'abstient sur tout élément dont l'état a changé
     depuis le scan (identité, cible occupée). Une interruption (Ctrl-C) pendant le
     renommage de casse en deux temps est rattrapée : l'état est restauré avant que
-    l'exception ne remonte, aucun __rename_tmp_* ne survit.
+    l'exception ne remonte, aucun __rename_tmp_* ne survit. Les dossiers touchés
+    retrouvent ensuite leurs dates d'avant, interruption comprise.
     """
     renommes = 0
     ignores: list[tuple[str, str]] = []
     erreurs: list[tuple[str, str]] = []
     repli = False
     traites = 0
+    dates = _dates_des_dossiers(modifs)
     try:
         for m in modifs:
             # Un signal d'arrêt reçu pendant le renommage d'un fichier est différé
@@ -499,8 +501,33 @@ def appliquer(modifs: list[Modif]):
             finally:
                 signal.pthread_sigmask(signal.SIG_SETMASK, masque)
     except KeyboardInterrupt as e:
+        _remettre_dates(dates, erreurs)
         raise Interrompu((renommes, ignores, erreurs, repli), traites) from e
+    _remettre_dates(dates, erreurs)
     return renommes, ignores, erreurs, repli
+
+
+def _dates_des_dossiers(modifs) -> dict:
+    """Dates (accès, modification) des dossiers touchés, relevées avant tout renommage."""
+    dates = {}
+    for m in modifs:
+        dossier = os.path.dirname(m.src)
+        if dossier not in dates:
+            try:
+                st = os.stat(dossier)
+                dates[dossier] = (st.st_atime_ns, st.st_mtime_ns)
+            except OSError:
+                pass
+    return dates
+
+
+def _remettre_dates(dates: dict, erreurs) -> None:
+    """Renommer change la date de modification du dossier : on remet celle d'avant."""
+    for dossier, ns in dates.items():
+        try:
+            os.utime(dossier, ns=ns)
+        except OSError as e:
+            erreurs.append((dossier, f"date du dossier non remise : {e}"))
 
 
 def _appliquer_un(m: Modif, renommes: int, ignores, erreurs, repli: bool):

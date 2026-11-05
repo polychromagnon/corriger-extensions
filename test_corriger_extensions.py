@@ -1055,3 +1055,56 @@ def test_doublon_fin_de_nom_bout_en_bout(tmp_path):
     assert noms(tmp_path / "2024") == ["IMG.2024.jpg"]
     assert (tmp_path / "Scan 12.5.pdf").read_bytes() == b"deux"
     assert scan_apply(tmp_path)["renommes"] == 0
+
+
+# ---------------------------------------------------------------------------
+# §2 — date d'origine des dossiers touchés remise (réponse PO 3a)
+# ---------------------------------------------------------------------------
+
+def _dater(chemin, secondes):
+    os.utime(chemin, ns=(secondes * 1_000_000_000, secondes * 1_000_000_000))
+
+
+def test_date_des_dossiers_remise(tmp_path):
+    (tmp_path / "album").mkdir()
+    touch(tmp_path / "album" / "a.JPG.JPG")
+    touch(tmp_path / "b.ZIP.ZIP")
+    _dater(tmp_path / "album", 1_546_300_800)          # 2019-01-01
+    _dater(tmp_path, 1_546_300_801)
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 2 and r["erreurs"] == []
+    assert os.stat(tmp_path / "album").st_mtime_ns == 1_546_300_800 * 1_000_000_000
+    assert os.stat(tmp_path).st_mtime_ns == 1_546_300_801 * 1_000_000_000
+
+
+def test_date_des_dossiers_remise_apres_interruption(tmp_path, monkeypatch):
+    for i in range(3):
+        touch(tmp_path / f"f{i}.JPG")
+    _dater(tmp_path, 1_546_300_800)
+    modifs = corr.scanner(tmp_path)[0]
+    vrai = corr._rename_no_overwrite
+    appels = []
+
+    def coupe(src, dst):
+        appels.append(src)
+        if len(appels) == 2:
+            raise KeyboardInterrupt
+        return vrai(src, dst)
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", coupe)
+    with pytest.raises(corr.Interrompu):
+        corr.appliquer(modifs)
+    assert noms(tmp_path) == ["f0.jpg", "f1.JPG", "f2.JPG"]
+    assert os.stat(tmp_path).st_mtime_ns == 1_546_300_800 * 1_000_000_000
+
+
+def test_date_non_remise_signalee(tmp_path, monkeypatch):
+    touch(tmp_path / "a.JPG.JPG")
+
+    def refuse(*a, **k):
+        raise PermissionError(errno.EPERM, "refusé")
+
+    monkeypatch.setattr(corr.os, "utime", refuse)
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 1
+    assert len(r["erreurs"]) == 1 and "date du dossier non remise" in r["erreurs"][0][1]
