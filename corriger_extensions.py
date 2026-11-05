@@ -16,8 +16,8 @@ GARANTIE D'INTÉGRITÉ
     sont PAS touchés. Sur le fichier, le seul horodatage que tout renommage POSIX
     met à jour est le ctime (« Attributs modifiés ») : il n'est pas affiché par le
     Finder et n'a aucun rapport avec tes dates EXIF (qui sont dans le contenu,
-    jamais lu). Le DOSSIER qui contient un fichier renommé voit en revanche sa date
-    de modification passer à l'heure du renommage, comme pour tout renommage.
+    jamais lu). Le DOSSIER qui contient un fichier renommé voit sa date de
+    modification changer, comme pour tout renommage : l'outil la remet ensuite.
 
 DÉROULEMENT (en une seule commande)
     1. SCAN — parcourt l'arborescence en lisant uniquement les noms de fichiers,
