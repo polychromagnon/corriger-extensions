@@ -950,24 +950,29 @@ def main() -> int:
         print("   Vise un dossier de données (ex. ~/Pictures, ~/Movies, /Volumes/TonArchive).")
         sys.exit(1)
 
-    # 1) Scan (lecture des noms uniquement)
-    print(f"🔎 Analyse des noms de fichiers sous : {_lisible(racine)}")
-    print("   (lecture seule, le contenu des fichiers n'est jamais ouvert)")
-    laisses: list = []
-    modifs, deja_ok, erreurs_acces, orphelins = scanner(racine, laisses)
-    comps = compagnons(modifs, laisses)
+    # Un Ctrl-C pendant l'analyse ou l'aperçu arrête net : rien n'a encore été renommé.
+    try:
+        # 1) Scan (lecture des noms uniquement)
+        print(f"🔎 Analyse des noms de fichiers sous : {_lisible(racine)}")
+        print("   (lecture seule, le contenu des fichiers n'est jamais ouvert)")
+        laisses: list = []
+        modifs, deja_ok, erreurs_acces, orphelins = scanner(racine, laisses)
+        comps = compagnons(modifs, laisses)
 
-    # 2) Aperçu + journal de la liste prévue (écrit AVANT toute modification, --dry-run compris)
-    journal, meme_volume = choisir_journal(racine)
-    if journal:
-        try:
-            ecrire_journal_prevu(journal, racine, modifs, deja_ok, erreurs_acces, orphelins,
-                                 laisses, comps)
-        except OSError as e:
-            print(f"⚠️  Journal non écrit ({e}) ; liste affichée en entier ci-dessous.")
-            journal = None
-    afficher_apercu(racine, modifs, deja_ok, erreurs_acces, orphelins, journal, meme_volume, tout,
-                    laisses, comps)
+        # 2) Aperçu + journal de la liste prévue (écrit AVANT toute modification, --dry-run compris)
+        journal, meme_volume = choisir_journal(racine)
+        if journal:
+            try:
+                ecrire_journal_prevu(journal, racine, modifs, deja_ok, erreurs_acces, orphelins,
+                                     laisses, comps)
+            except OSError as e:
+                print(f"⚠️  Journal non écrit ({e}) ; liste affichée en entier ci-dessous.")
+                journal = None
+        afficher_apercu(racine, modifs, deja_ok, erreurs_acces, orphelins, journal, meme_volume, tout,
+                        laisses, comps)
+    except KeyboardInterrupt:
+        print("\n✋ Interrompu pendant l'analyse : rien n'a été modifié.")
+        return 130
     code_illisibles = 1 if erreurs_acces else 0
 
     if not modifs:

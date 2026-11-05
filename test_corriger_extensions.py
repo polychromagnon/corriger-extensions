@@ -2134,3 +2134,15 @@ print(corr.appliquer(modifs)[0])
     r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout.strip() == "3"
     assert noms(tmp_path) == ["f0.jpg", "f1.jpg", "f2.jpg"]
+
+
+def test_ctrl_c_pendant_l_analyse(tmp_path, monkeypatch, capsys):
+    touch(tmp_path / "a.JPG.JPG")
+
+    def coupe(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(corr, "compagnons", coupe)
+    assert _lancer_main(tmp_path, None, monkeypatch, "--oui") == 130
+    assert capsys.readouterr().out.endswith("\n✋ Interrompu pendant l'analyse : rien n'a été modifié.\n")
+    assert noms(tmp_path) == ["a.JPG.JPG"]
