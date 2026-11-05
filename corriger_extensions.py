@@ -201,20 +201,11 @@ _ERRNO_NON_ATOMIQUE = {
 class Interrompu(KeyboardInterrupt):
     """Ctrl-C pendant l'application : porte les résultats partiels jusqu'au journal."""
 
-    def __init__(self, resultats, traites: int):
+    def __init__(self, resultats, traites: int, signum: int = signal.SIGINT):
         super().__init__()
         self.resultats = resultats
         self.traites = traites
-
-
-class _ArretParSignal(KeyboardInterrupt):
-    def __init__(self, signum: int):
-        super().__init__()
         self.signum = signum
-
-
-def _lever_arret(signum, _cadre) -> None:
-    raise _ArretParSignal(signum)
 
 
 class _AtomicIndisponible(Exception):
@@ -582,23 +573,42 @@ def appliquer(modifs: list[Modif]):
     erreurs: list[tuple[str, str]] = []
     repli = False
     traites = 0
-    dates = _dates_des_dossiers(modifs)
+    # Les signaux d'arrêt restent bloqués pendant toute l'application : ils ne sont
+    # lus qu'entre deux fichiers, et les dates des dossiers sont remises dans tous
+    # les cas. Jamais de nom temporaire laissé, jamais de compteur décalé.
+    masque = signal.pthread_sigmask(signal.SIG_BLOCK, _SIGNAUX_DIFFERES)
     try:
-        for m in modifs:
-            # Un signal d'arrêt reçu pendant le renommage d'un fichier est différé
-            # jusqu'à la fin de ce fichier : jamais de nom temporaire laissé entre
-            # les deux étapes, jamais de compteur décalé.
-            masque = signal.pthread_sigmask(signal.SIG_BLOCK, _SIGNAUX_DIFFERES)
-            try:
+        dates = _dates_des_dossiers(modifs)
+        signum = None
+        try:
+            for m in modifs:
+                signum = _signal_en_attente()
+                if signum is not None:
+                    break
                 renommes, repli = _appliquer_un(m, renommes, ignores, erreurs, repli)
                 traites += 1
-            finally:
-                signal.pthread_sigmask(signal.SIG_SETMASK, masque)
-    except KeyboardInterrupt as e:
+        except KeyboardInterrupt:
+            signum = signal.SIGINT
         _remettre_dates(dates, erreurs)
-        raise Interrompu((renommes, ignores, erreurs, repli), traites) from e
-    _remettre_dates(dates, erreurs)
+        if signum is None:
+            signum = _signal_en_attente()
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, masque)
+    if signum is not None:
+        raise Interrompu((renommes, ignores, erreurs, repli), traites, signum)
     return renommes, ignores, erreurs, repli
+
+
+def _signal_en_attente():
+    """Consomme un signal d'arrêt bloqué en attente ; None s'il n'y en a pas.
+
+    Un signal que le processus ignore (SIGHUP sous nohup) est consommé sans effet.
+    """
+    for s in sorted(signal.sigpending() & _SIGNAUX_DIFFERES):
+        signal.sigwait({s})
+        if signal.getsignal(s) is not signal.SIG_IGN:
+            return s
+    return None
 
 
 def _dates_des_dossiers(modifs) -> dict:
@@ -978,14 +988,23 @@ def main() -> int:
         print("✋ Aucune modification effectuée.")
         return code_illisibles
 
-    # 4) Application (uniquement sur la liste figée). SIGTERM et SIGHUP (fermeture
-    # du Terminal) sont traités comme un Ctrl-C : arrêt entre deux fichiers, journal complété.
-    anciens = {s: signal.signal(s, _lever_arret) for s in (signal.SIGTERM, signal.SIGHUP)}
+    # 4) Application (uniquement sur la liste figée), puis compte rendu. Ctrl-C, SIGTERM
+    # et SIGHUP (fermeture du Terminal) restent bloqués jusqu'au bout : appliquer les lit
+    # entre deux fichiers, et le journal se complète quoi qu'il arrive.
+    masque = signal.pthread_sigmask(signal.SIG_BLOCK, _SIGNAUX_DIFFERES)
+    try:
+        return _appliquer_et_rendre_compte(modifs, journal, erreurs_acces)
+    finally:
+        while _signal_en_attente() is not None:
+            pass                                      # tout est fait et consigné
+        signal.pthread_sigmask(signal.SIG_SETMASK, masque)
+
+
+def _appliquer_et_rendre_compte(modifs, journal, erreurs_acces) -> int:
     try:
         renommes, ignores, erreurs, repli = appliquer(modifs)
     except Interrompu as e:
-        signum = getattr(e.__cause__, "signum", signal.SIGINT)
-        cause = "Ctrl-C" if signum == signal.SIGINT else signal.Signals(signum).name
+        cause = "Ctrl-C" if e.signum == signal.SIGINT else signal.Signals(e.signum).name
         if journal:
             try:
                 ajouter_resultats(journal, *e.resultats, interruption=(e.traites, len(modifs), cause))
@@ -995,10 +1014,7 @@ def main() -> int:
               f"({e.resultats[0]} renommé(s)) ; les suivants n'ont pas été touchés.")
         if journal:
             print(f"📝 Journal complet : {journal}")
-        sys.exit(128 + signum)
-    finally:
-        for s, ancien in anciens.items():
-            signal.signal(s, ancien)
+        sys.exit(128 + e.signum)
     if journal:
         try:
             ajouter_resultats(journal, renommes, ignores, erreurs, repli)
@@ -1018,7 +1034,6 @@ def main() -> int:
     if journal:
         print(f"📝 Journal complet : {journal}")
     return 1 if erreurs or erreurs_acces else 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

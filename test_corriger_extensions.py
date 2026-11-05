@@ -956,11 +956,15 @@ def coupe(src, dst):
         os.kill(os.getpid(), signal.SIGTERM)
     return r
 corr._rename_no_overwrite = coupe
-corr.appliquer(modifs)
+try:
+    corr.appliquer(modifs)
+except corr.Interrompu as e:
+    print(e.traites, e.signum == signal.SIGTERM)
+    sys.exit(0)
 """
     import subprocess
-    r = subprocess.run([sys.executable, "-c", script], capture_output=True)
-    assert r.returncode == -signal.SIGTERM
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.split() == ["1", "True"]   # lu entre deux fichiers
     assert noms(tmp_path) == ["a.jpg", "b.JPG"]
     assert a.with_name("a.jpg").read_bytes() == b"un"
 
@@ -2063,3 +2067,70 @@ def test_retour_arriere_impossible_apres_cible_occupee(tmp_path, monkeypatch):
     assert renommes == 0 and ignores == [] and len(erreurs) == 1
     assert erreurs[0][0] == "a.JPG" and erreurs[0][1].startswith(
         f"retour arrière impossible, fichier resté sous {corr.PREFIXE_TMP}a.jpg : [Errno 19] plus de disque")
+
+
+# ---------------------------------------------------------------------------
+# Signal pendant la remise des dates : dates remises, journal complété (attaque 2, cycle 2)
+# ---------------------------------------------------------------------------
+
+def test_signal_pendant_la_remise_des_dates(tmp_path, monkeypatch):
+    for d in ["d1", "d2", "d3"]:
+        (tmp_path / d).mkdir()
+        touch(tmp_path / d / "f.JPG.JPG")
+        _dater(tmp_path / d, 1_546_300_800)
+    modifs = corr.scanner(tmp_path)[0]
+    vrai = os.utime
+    appels = []
+
+    def utime_puis_ctrl_c(chemin, *a, **k):
+        appels.append(chemin)
+        if len(appels) == 1:
+            os.kill(os.getpid(), signal.SIGINT)
+        return vrai(chemin, *a, **k)
+
+    monkeypatch.setattr(corr.os, "utime", utime_puis_ctrl_c)
+    with pytest.raises(corr.Interrompu) as interruption:
+        corr.appliquer(modifs)
+    assert interruption.value.traites == 3 and interruption.value.signum == signal.SIGINT
+    for d in ["d1", "d2", "d3"]:
+        assert os.stat(tmp_path / d).st_mtime_ns == 1_546_300_800 * 1_000_000_000
+        assert noms(tmp_path / d) == ["f.jpg"]
+
+
+def test_signal_pendant_le_compte_rendu_ne_coupe_pas_le_journal(tmp_path, monkeypatch, capsys):
+    touch(tmp_path / "a.JPG.JPG")
+    j = tmp_path.parent / f"j-{tmp_path.name}.txt"
+    vrai = corr.ajouter_resultats
+
+    def resultats_puis_sigterm(*a, **k):
+        os.kill(os.getpid(), signal.SIGTERM)
+        return vrai(*a, **k)
+
+    monkeypatch.setattr(corr, "ajouter_resultats", resultats_puis_sigterm)
+    assert _lancer_main(tmp_path, j, monkeypatch, "--oui") == 0
+    assert "Renommés avec succès : 1" in j.read_text(encoding="utf-8")
+    assert "✅ Terminé. 1 fichier(s) renommé(s)." in capsys.readouterr().out
+
+
+def test_sighup_ignore_respecte(tmp_path):
+    """Sous nohup (SIGHUP ignoré), fermer le Terminal n'arrête pas le run."""
+    import subprocess
+    for i in range(3):
+        touch(tmp_path / f"f{i}.JPG")
+    script = f"""
+import os, signal, sys
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+sys.path.insert(0, {str(Path(corr.__file__).parent)!r})
+import corriger_extensions as corr
+from pathlib import Path
+modifs = corr.scanner(Path({str(tmp_path)!r}))[0]
+vrai = corr._rename_no_overwrite
+def coupe(src, dst):
+    os.kill(os.getpid(), signal.SIGHUP)
+    return vrai(src, dst)
+corr._rename_no_overwrite = coupe
+print(corr.appliquer(modifs)[0])
+"""
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.strip() == "3"
+    assert noms(tmp_path) == ["f0.jpg", "f1.jpg", "f2.jpg"]
