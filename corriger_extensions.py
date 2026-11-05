@@ -42,10 +42,10 @@ FILETS DE SÉCURITÉ
     - Ne renomme jamais un dossier, seulement des fichiers.
     - Fusion d'extensions UNIQUEMENT si elles se réduisent à une seule forme
       (photo.jpg.jpg → photo.jpg). Deux extensions différentes (photo.jpg.png)
-      sont laissées intactes : on ne devine pas laquelle garder. Une pile
-      d'extensions toutes identiques est fusionnée même si l'extension est
-      inconnue (x.FOO.FOO → x.foo), sauf si elle n'est faite que de chiffres
-      (version.1.1 intact).
+      sont laissées intactes : on ne devine pas laquelle garder. Un doublon en
+      fin de nom est fusionné même si l'extension est inconnue (x.FOO.FOO →
+      x.foo, IMG.2024.JPG.JPG → IMG.2024.jpg), sauf s'il n'est fait que de
+      chiffres (version.1.1 intact).
     - Ne met en minuscules que les extensions connues (Notes.IMPORTANT intact).
     - Conflit de nom avec un autre fichier → suffixe _2, _3… ; jamais d'écrasement.
     - Renommage de casse (PHOTO.JPG → photo.jpg) en deux temps, avec retour
@@ -88,9 +88,8 @@ from collections import namedtuple
 # ne change que l'étiquette du nom, jamais le contenu.) Mettre False pour garder .jpeg.
 NORMALISER_JPEG = True
 
-# Extensions reconnues. Une pile d'extensions mêlées n'est fusionnée que si elles
-# sont toutes ici ET se réduisent à une seule forme. On ne met en minuscules QUE ces
-# extensions (hors fusion d'une pile identique, voir _doublon_fusionnable).
+# Extensions reconnues. On ne met en minuscules QUE ces extensions, hors fusion d'un
+# doublon (voir nouveau_nom), qui vaut pour toute extension.
 KNOWN_EXTS = {
     # Images
     "jpg", "jpeg", "png", "gif", "heic", "heif", "tiff", "tif",
@@ -262,20 +261,22 @@ def _rename_no_overwrite(src: str, dst: str) -> bool:
 # Calcul du nom propre (aucune lecture de contenu)
 # ----------------------------------------------------------------------------
 
-def _doublon_fusionnable(suffixes: list[str]) -> bool:
-    forme = suffixes[0].lower()
-    return (len(suffixes) > 1
-            and all(s.lower() == forme for s in suffixes)
-            and forme.isascii() and forme.isalnum()
-            and not forme.isdigit())
+def _forme(partie: str) -> str:
+    return NORMALISATIONS.get(partie.lower(), partie.lower())
+
+
+def _forme_fusionnable(forme: str) -> bool:
+    """Bornes de la fusion : lettres et chiffres ASCII, au moins une lettre (version.1.1 intact)."""
+    return forme.isascii() and forme.isalnum() and not forme.isdigit()
 
 
 def nouveau_nom(nom: str) -> str:
     """Nom corrigé pour un fichier, ou le nom inchangé s'il est déjà propre.
 
-    - extensions empilées toutes connues et réductibles à une seule forme → fusion ;
-    - extensions empilées toutes identiques (casse ignorée), même inconnues → fusion,
-      sauf partie faite uniquement de chiffres (version.1.1) ou hors [A-Za-z0-9] ;
+    - la suite de parties identiques qui termine le nom (casse ignorée, jpeg = jpg),
+      longue d'au moins deux, est réduite à une seule extension en minuscules :
+      IMG.2024.JPG.JPG → IMG.2024.jpg, x.FOO.FOO → x.foo ; jamais pour une partie
+      faite uniquement de chiffres (version.1.1) ou hors [A-Za-z0-9] ;
     - sinon, casse de la dernière extension normalisée SI elle est connue ;
     - si la dernière partie n'est pas une extension connue → rien n'est touché.
     """
@@ -286,23 +287,17 @@ def nouveau_nom(nom: str) -> str:
     if parties[0] == "":            # nom caché (.qqch) : sécurité, on ne touche pas
         return nom
 
-    suffixes = parties[1:]
-    tous_connus = all(s.lower() in KNOWN_EXTS for s in suffixes)
+    forme_fin = _forme(parties[-1])
+    repetitions = 0
+    for partie in reversed(parties[1:]):
+        if _forme(partie) != forme_fin:
+            break
+        repetitions += 1
+    if repetitions >= 2 and _forme_fusionnable(forme_fin):
+        return f"{'.'.join(parties[:-repetitions])}.{forme_fin}"
 
-    derniere = parties[-1]
-    derniere_norm = NORMALISATIONS.get(derniere.lower(), derniere.lower())
-    derniere_connue = derniere.lower() in KNOWN_EXTS
-
-    if tous_connus:
-        formes = {NORMALISATIONS.get(s.lower(), s.lower()) for s in suffixes}
-        if len(formes) == 1:        # duplication réductible à UNE forme → fusion
-            return f"{parties[0]}.{derniere_norm}"
-
-    if _doublon_fusionnable(suffixes):
-        return f"{parties[0]}.{derniere.lower()}"
-
-    if derniere_connue:             # on normalise juste la casse de l'extension finale
-        return f"{'.'.join(parties[:-1])}.{derniere_norm}"
+    if parties[-1].lower() in KNOWN_EXTS:   # on normalise juste la casse de l'extension finale
+        return f"{'.'.join(parties[:-1])}.{forme_fin}"
 
     return nom                      # dernière partie inconnue → intact
 

@@ -66,10 +66,10 @@ def forge(path: Path, cible_nom: str, case_safe: bool, racine: Path) -> corr.Mod
     ("PHOTO.JPG", "PHOTO.jpg"),               # casse, stem inchangé
     ("photo.jpg.png", "photo.jpg.png"),       # extensions différentes → intact
     ("Notes.IMPORTANT", "Notes.IMPORTANT"),   # extension inconnue → intact
-    ("IMG.2024.JPG.JPG", "IMG.2024.JPG.jpg"), # limite gravée : 2024 non connu, doublon survit
+    ("IMG.2024.JPG.JPG", "IMG.2024.jpg"),     # doublon en fin de nom fusionné (PO 1a)
     ("sansext", "sansext"),                   # pas d'extension
     (".cache", ".cache"),                     # nom caché → intact
-    ("a.b.c.JPG.JPG", "a.b.c.JPG.jpg"),       # b,c non connus → seule la casse finale
+    ("a.b.c.JPG.JPG", "a.b.c.jpg"),           # parties précédentes gardées (PO 1a)
 ])
 def test_nouveau_nom(entree, attendu):
     assert corr.nouveau_nom(entree) == attendu
@@ -94,8 +94,8 @@ def test_nouveau_nom(entree, attendu):
     ("x.final version.final version", "x.final version.final version"),
     ("x.été.été", "x.été.été"),                     # non ASCII
     ("x.a-b.a-b", "x.a-b.a-b"),                     # ponctuation
-    ("IMG.2024.JPG.JPG", "IMG.2024.JPG.jpg"),       # pile non entièrement identique
-    ("a.tar.gz.gz", "a.tar.gz.gz"),
+    ("IMG.2024.JPG.JPG", "IMG.2024.jpg"),           # doublon en fin de nom (PO 1a)
+    ("a.tar.gz.gz", "a.tar.gz"),
     ("x.FOO", "x.FOO"),                             # casse seule hors liste : intact
     ("Notes.IMPORTANT", "Notes.IMPORTANT"),
     (".cache.cache", ".cache.cache"),               # nom caché
@@ -1004,3 +1004,54 @@ def test_nom_non_utf8(tmp_path, monkeypatch, capsys):
     assert sorted(os.listdir(os.fsencode(racine))) == [b"b.zip", b"caf\xe9.jpg"]
     assert "caf\\udce9.JPG.JPG" in capsys.readouterr().out
     assert "caf\\udce9.JPG.JPG" in journal.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# §2 — fusion du doublon en fin de nom (réponse PO 1a) et .jpeg gardé en .jpg (2b)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("entree,attendu", [
+    ("IMG.2024.JPG.JPG", "IMG.2024.jpg"),
+    ("Vacances.2024.JPG.JPG", "Vacances.2024.jpg"),
+    ("Scan 12.5.PDF.PDF", "Scan 12.5.pdf"),
+    ("M. Dupont.JPG.JPG", "M. Dupont.jpg"),
+    ("a.b.c.JPG.JPG", "a.b.c.jpg"),
+    ("a.tar.gz.gz", "a.tar.gz"),
+    ("IMG.2024.JPG.jpg", "IMG.2024.jpg"),            # sortie de la v4.1.0 reprise
+    ("photo.png.jpeg.jpg", "photo.png.jpg"),
+    ("a.JPG.x.JPG.JPG", "a.JPG.x.jpg"),
+    ("rapport.v2.FOO.FOO", "rapport.v2.foo"),
+    ("photo.jpg.png", "photo.jpg.png"),
+    ("x.v2.1.1", "x.v2.1.1"),                        # suite finale de chiffres
+    ("x.2024.2024.JPG", "x.2024.2024.jpg"),
+    ("x.a b.a b", "x.a b.a b"),
+    ("x.y.été.été", "x.y.été.été"),
+])
+def test_fusion_doublon_fin_de_nom(entree, attendu):
+    assert corr.nouveau_nom(entree) == attendu
+    assert corr.nouveau_nom(attendu) == attendu       # idempotent
+
+
+@pytest.mark.parametrize("entree,attendu", [("photo.jpeg", "photo.jpg"), ("X.JPEG", "X.jpg")])
+def test_jpeg_seul_devient_jpg(entree, attendu):
+    assert corr.nouveau_nom(entree) == attendu
+
+
+def test_jpeg_vers_jpg_jamais_ecrase(tmp_path):
+    touch(tmp_path / "photo.jpeg", b"jpeg")
+    touch(tmp_path / "photo.jpg", b"jpg")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 1
+    assert (tmp_path / "photo.jpg").read_bytes() == b"jpg"
+    assert (tmp_path / "photo_2.jpg").read_bytes() == b"jpeg"
+
+
+def test_doublon_fin_de_nom_bout_en_bout(tmp_path):
+    (tmp_path / "2024").mkdir()
+    touch(tmp_path / "2024" / "IMG.2024.JPG.JPG", b"un")
+    touch(tmp_path / "Scan 12.5.PDF.PDF", b"deux")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 2
+    assert noms(tmp_path / "2024") == ["IMG.2024.jpg"]
+    assert (tmp_path / "Scan 12.5.pdf").read_bytes() == b"deux"
+    assert scan_apply(tmp_path)["renommes"] == 0
