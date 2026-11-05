@@ -28,7 +28,7 @@
 
 - [trust, 2026-11-05] Doublon en fin de nom : `IMG.2024.JPG.JPG`, `Vacances.2024.JPG.JPG` ou `Scan 12.5.PDF.PDF` gardent leur doublon (seule la casse finale change : `IMG.2024.JPG.jpg`), alors que ta règle n°1 dit qu'un doublon d'extension identique est fusionné. Fusionner aussi le doublon en fin de nom (`IMG.2024.jpg`), toujours sans fusionner les chiffres seuls (`version.1.1`) ? Proposition : oui. →
 - [trust, 2026-11-05] Un `.jpeg` sain est renommé en `.jpg` (`photo.jpeg` devient `photo.jpg`), comportement hérité de la v4.0.0, alors que l'outil ne doit corriger que les doublons et les majuscules. Garder ce renommage ? Proposition : non, ne plus toucher un `.jpeg` seul (`X.JPEG` deviendrait `X.jpeg`) ; la fusion `photo.jpeg.jpg` en `photo.jpg` reste. →
-- [trust, 2026-11-05] Renommer un fichier change la date de modification du dossier qui le contient (inévitable au niveau du disque) : un tri des dossiers par date dans le Finder en sera changé. Remettre la date d'origine des dossiers touchés après les renommages ? Proposition : oui. →
+- [trust, 2026-11-05] Renommer un fichier change la date de modification du dossier qui le contient (inévitable au niveau du disque) : un tri des dossiers par date dans le Finder en sera changé. La « Date d'ajout » qu'affiche le Finder n'est pas couverte par le SPEC non plus (non vérifiée : à relever sur ton Mac avec `mdls -name kMDItemDateAdded` avant et après la vérification du README). Remettre la date d'origine des dossiers touchés après les renommages ? Proposition : oui. →
 - [trust, 2026-11-05] Un dossier situé sous `Library` (par exemple iCloud Drive, `~/Library/Mobile Documents/com~apple~CloudDocs`) est accepté comme dossier à traiter ; un dossier situé dans un paquet ou une corbeille est désormais refusé. Refuser aussi tout dossier sous `Library` ? Proposition : non, iCloud Drive y vit. →
 - [trust, 2026-11-05] Sur un disque exFAT, macOS range les tags Finder d'un fichier `x` dans un fichier caché `._x`, que l'outil ne touche jamais. Je n'ai pas pu vérifier sous Linux si macOS renomme le `._` avec son fichier ; sinon les tags d'un fichier corrigé seraient perdus. Test sur ton Mac, dans un terminal, sur le disque exFAT : `cd /Volumes/TON_DISQUE && touch t.JPG.JPG && xattr -w user.test 1 t.JPG.JPG && python3 -c "import os; os.rename('t.JPG.JPG', 't.jpg')" && ls -a | grep 't\.' && xattr -l t.jpg` ; attendu si tout va bien : `._t.jpg` présent, aucun `._t.JPG.JPG`, et `user.test: 1`. Lance aussi sur ce disque la vérification Mac du README : un témoignage en ligne (non vérifié) dit qu'un renommage sur disque FAT sous macOS remet la date de modification du fichier à « maintenant » ; si c'est le cas, l'outil devra la restaurer. Proposition : tu lances ce test et tu colles la sortie ici. →
 
@@ -47,6 +47,12 @@
 - La fusion « toute extension » ne joue que si toutes les parties après le premier point sont identiques : `IMG.2024.JPG.JPG` et `a.tar.gz.gz` gardent leur doublon (seule la casse finale change). Écarté : fusionner aussi un doublon en fin de nom. Raison : option minimale ; élargir changerait des noms comme `rapport.v2.v2` sans que tu l'aies vu. (SPEC, gel n°5)
 - La partie répétée doit être faite de lettres ASCII et de chiffres, avec au moins une lettre : `x.final version.final version` ou `x.été.été` ne sont pas fusionnés. Écarté : toute chaîne répétée. Raison : une chaîne avec espace ou accent est plus souvent un vrai nom qu'une extension cassée ; option minimale et réversible.
 - Version 4.2.0. Écarté : 4.1.1 ou 5.0.0. Raison : nouveauté compatible (semver mineur), aucun comportement existant ne change.
+- Défaut grave trouvé et corrigé : sur Mac, l'outil passait le code `0x2` à l'appel système de renommage, qui veut dire « échanger les deux fichiers » et non « refuser si la cible existe » (`0x4`, vérifié dans le code source d'Apple). La v4.1.0 ne renommait donc rien sur ton Mac. Écarté : rien, c'est un défaut. Raison : promesse « jamais d'écrasement ».
+- Un dossier situé dans un paquet macOS ou une corbeille est refusé comme dossier de départ ; les photothèques iPhoto (`.photolibrary`) et la corbeille Windows (`$RECYCLE.BIN`) ne sont jamais parcourues ; un dossier système tapé dans une autre casse (`~/library`) est refusé. Écarté : s'en tenir au seul nom du dossier de départ. Raison : le SPEC promet de ne jamais toucher l'intérieur d'un paquet ni d'une corbeille.
+- Ctrl-C, fermeture du Terminal ou arrêt système : l'arrêt attend la fin du fichier en cours. Écarté : laisser l'arrêt couper au milieu. Raison : 12 essais sur 40 laissaient un nom temporaire `__rename_tmp_*`.
+- La suite de tests automatiques est déclarée « Linux », sautée sur Mac, et une vérification manuelle pour le Mac est écrite dans le README. Écarté : la rendre portable sans pouvoir l'essayer sur un Mac. Raison : une suite non essayée serait un faux vert.
+- Un dossier sous `Library` (iCloud Drive) reste accepté comme dossier de départ, en attendant ta réponse en section 3. Écarté : le refuser d'office. Raison : option la plus réversible, iCloud Drive y vit.
+- La règle d'arrêt des attaques a laissé ouverte, chez toi, la cause « preuves du SPEC sans test qui les protège » (revenue à chaque attaque) au lieu de la réparer indéfiniment. Écarté : continuer à combler un trou par attaque. Raison : un outil de mutation la règle en une passe (question en section 3).
 - `a.JPG.jpg` devient `a.jpg`. Écarté : le laisser tel quel. Raison : c'était déjà le comportement. (n°2)
 - Preuve « ce que tu vois est ce qui sera fait » : l'outil ne fait jamais rien hors de la liste montrée, mais peut en faire moins (abstention sur un cas douteux). Écarté : exiger qu'il fasse toute la liste. Raison : une abstention légitime rendrait cette preuve fausse. (n°4)
 - `IMG.2024.JPG.JPG` n'est corrigé que sur la casse (`IMG.2024.JPG.jpg`) : le doublon reste. Écarté : élargir la fusion. Raison : cela changerait le comportement sur des fichiers réels. (n°5)
@@ -64,10 +70,10 @@
 
 > Écrit par le dernier run, verdict en première ligne. Le détail des preuves vit dans `dossier/proof.md` ; ici, seulement ce qui t'oriente.
 
-**Verdict : SPEC prêt**
+**Verdict : bloqué, lacunes du SPEC (section 3, 10 questions), PO requis**
 
-- Intention non validée par un humain : essaie le produit sur un dossier-jouet pour vérifier qu'il fait ce que tu voulais.
-- Fait : ta réponse (choix c) appliquée au SPEC le 2026-11-05 et gravée en section 1.
-- Reste : ship (code, tests, preuves, attaque du code au niveau +++), puis send.
-- Bloqué : rien.
-- En attente de ton feu vert : rien.
+- Intention non validée par un humain : essaie le produit pour vérifier qu'il fait ce que tu voulais (vérification Mac du README, sur un dossier jetable puis sur un disque exFAT).
+- Fait : ship du 2026-11-05 au niveau +++ : ton choix (c) codé (v4.2.0), 148 tests verts rejoués par le harnais (`proof.lock`, commit cité dans `proof.md`), 9 attaques trust, dont les deux dernières n'ont rien trouvé de neuf ; 10 défauts corrigés, dont un qui empêchait tout renommage sur Mac depuis la v4.1.0.
+- Reste : tes réponses en section 3, puis un nouveau `/dev` (il les applique, refait ship, puis send).
+- Bloqué : 10 questions ouvertes en section 3 ; aucune n'est un défaut de sûreté connu, toutes changent ce que l'outil fait ou promet.
+- En attente de ton feu vert : la vérification Mac du README (rien n'a pu être essayé sur un vrai Mac) ; send (release) n'a pas tourné.
