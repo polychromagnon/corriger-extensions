@@ -31,6 +31,11 @@
 
 
 
+- [trust, 2026-11-05] Fichiers cachés (`.photo.JPG.JPG`, `._IMG.JPG`) et entrées spéciales (tubes, sockets) : l'outil ne les touche pas et ne les compte nulle part, alors que ta réponse 8a dit que ce qui est laissé de côté est compté et listé. Les lister ferait apparaître chaque `.DS_Store` et chaque `._` d'un disque exFAT. Proposition : les compter sans les lister (un seul nombre à l'aperçu et au journal). →
+- [trust, 2026-11-05] Extensions connues : la casse seule ne corrige pas des formats courants hors liste, par exemple `x.CR3` (Canon), `x.RAF` (Fujifilm), `x.MTS` (caméscopes), `x.WMA`, `x.OPUS`, `x.3G2`, `x.ODG` ; seul un doublon (`x.CR3.CR3`) est corrigé. Proposition : ajouter ces 7 extensions. →
+- [trust, 2026-11-05] Bornes de la fusion : un doublon n'est fusionné que s'il est fait de lettres et chiffres ASCII (`x.été.été` et `x.final version.final version` restent tels quels), plus étroit que ta règle n°1 « quelle que soit l'extension ». Proposition : garder ces bornes (une partie avec accent ou espace est plus souvent un vrai nom qu'une extension cassée). →
+- [trust, 2026-11-05] Ctrl-C à la question o/N : l'outil répond « Annulé. » et sort avec le code 0, alors que le SPEC dit « 130 après un Ctrl-C » (pensé pour l'application). Proposition : 130 aussi à la question, pour qu'un script sache que tu as interrompu. →
+
 ## 4. Décidé sans toi — à revoir
 
 > Une ligne par décision prise en ton absence : le choix, l'alternative écartée, la raison. Trois gestes possibles : tu la laisses (elle reste un défaut tacite), tu la graves en section 1 (elle devient loi), ou tu écris **NON** en fin de ligne (le prochain run la défait et repose la question en section 3).
