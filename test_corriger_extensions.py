@@ -860,7 +860,7 @@ def test_choisir_journal_ne_detruit_pas_un_homonyme(tmp_path, monkeypatch):
 @pytest.mark.parametrize("chemin", [
     "/library", "/system", "/applications", "/USR/local", "/Private/var",
     "/Users/x/library", "/Users/x/.trash/vieux", "/Volumes/A/Photos.PHOTOSLIBRARY/originals",
-    "/Volumes/A/$recycle.bin",
+    "/Volumes/A/$recycle.bin", "/Volumes/A/.Trashes/501", "/Volumes/A/.TRASH",
 ])
 def test_racine_interdite_sans_casse(chemin):
     assert corr.est_racine_interdite(Path(chemin)) is True
@@ -1188,21 +1188,24 @@ def test_laisses_de_cote_comptes_et_listes(tmp_path, monkeypatch, capsys):
     assert (racine / "x.JPG").exists() and (racine / "ok.zip").exists()
 
 
-@pytest.mark.parametrize("avec_journal", [True, False])
-def test_laisses_de_cote_longue_liste(tmp_path, monkeypatch, capsys, avec_journal):
+@pytest.mark.parametrize("avec_journal,nombre,listes", [
+    (True, corr.SEUIL_LISTES + 1, False), (False, corr.SEUIL_LISTES + 1, True),
+    (True, corr.SEUIL_LISTES, True),
+])
+def test_laisses_de_cote_longue_liste(tmp_path, monkeypatch, capsys, avec_journal, nombre, listes):
     racine = tmp_path / "racine"
     racine.mkdir()
-    for i in range(corr.SEUIL_LISTES + 1):
+    for i in range(nombre):
         (racine / f".cache{i}").mkdir()
     touch(racine / "a.JPG.JPG")
     journal = tmp_path / "rename_log_test.txt" if avec_journal else None
     _lancer_main(racine, journal, monkeypatch, "--dry-run")
     sortie = capsys.readouterr().out
     lignes = [l for l in sortie.splitlines() if l.strip().startswith("· .cache")]
-    assert len(lignes) == (0 if avec_journal else corr.SEUIL_LISTES + 1)
-    if avec_journal:
+    assert len(lignes) == (nombre if listes else 0)
+    if not listes:
         assert "liste complète dans le journal" in sortie
-        assert journal.read_text(encoding="utf-8").count("(dossier caché)") == corr.SEUIL_LISTES + 1
+        assert journal.read_text(encoding="utf-8").count("(dossier caché)") == nombre
 
 
 # ---------------------------------------------------------------------------
@@ -1298,3 +1301,401 @@ def test_caracteres_de_controle_echappes(tmp_path, monkeypatch, capsys):
     for brut in ["\x1b", "\r", "‮", "a\nb"]:
         assert brut not in sortie and brut not in texte
     assert sorted(os.listdir(racine)) == sorted(["a\nb.jpg", "esc\x1b[2K\rfaux.jpg", "inv‮gpj.zip"])
+
+
+# ---------------------------------------------------------------------------
+# Sorties de référence : écran et journal exacts (ce que le PO lit avant de dire o/N)
+# ---------------------------------------------------------------------------
+
+class _DateFigee(corr.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 1, 2, 3, 4, 5)
+
+
+ECRAN_COMPLET = "🔎 Analyse des noms de fichiers sous : <RACINE>\n   (lecture seule, le contenu des fichiers n'est jamais ouvert)\n\n📁 Racine                  : <RACINE>\n🔧 À corriger              : 3\n✅ Déjà corrects           : 3\n🧹 Restes d'un run interrompu (__rename_tmp_*, jamais renommés) : 1\n      · __rename_tmp_x.jpg\n🙈 Laissés de côté (1 dossier Library ou corbeille, 1 dossier caché, 1 journal de l'outil (rename_log_*), 1 lien symbolique non suivi) : 4\n      · .cache (dossier caché)\n      · Library (dossier Library ou corbeille)\n      · lien (lien symbolique non suivi)\n      · rename_log_vieux.txt (journal de l'outil (rename_log_*))\n🔗 Compagnons et liens à vérifier (jamais renommés) : 2\n      · a.JPG.JPG.xmp → vise a.JPG.JPG (compagnon nommé d'après le nom complet)\n      · lien → vise a.JPG.JPG (lien symbolique)\n📝 Liste complète (journal): <JOURNAL>\n   ⚠️  Journal sur le MÊME volume que la racine (aucun autre volume inscriptible trouvé).\n\nRenommages prévus :\n----------------------------------------------------------------------\n  a.JPG.JPG\n      → a.jpg\n  album/IMG.2024.JPG.JPG\n      → IMG.2024.jpg\n  c.XLSX\n      → c.xlsx\n\n✅ Terminé. 3 fichier(s) renommé(s).\n📝 Journal complet : <JOURNAL>\n"
+
+JOURNAL_COMPLET = "Journal de nettoyage d'extensions — 2026-01-02 03:04:05\nRacine : <RACINE>\nÉtat : LISTE PRÉVUE (rien n'a encore été renommé)\n==============================================================================\n\nÀ CORRIGER — 3 fichier(s)\n------------------------------------------------------------------------------\na.JPG.JPG\n  → a.jpg\n\nalbum/IMG.2024.JPG.JPG\n  → IMG.2024.jpg\n\nc.XLSX\n  → c.xlsx\n\n\nDÉJÀ CORRECTS — 3 fichier(s) (nom déjà propre)\n\nCOMPAGNONS ET LIENS À VÉRIFIER (jamais renommés) — 2\n------------------------------------------------------------------------------\na.JPG.JPG.xmp → vise a.JPG.JPG (compagnon nommé d'après le nom complet)\nlien → vise a.JPG.JPG (lien symbolique)\n\nLAISSÉS DE CÔTÉ (jamais renommés) — 4\n------------------------------------------------------------------------------\n.cache (dossier caché)\nLibrary (dossier Library ou corbeille)\nlien (lien symbolique non suivi)\nrename_log_vieux.txt (journal de l'outil (rename_log_*))\n\nORPHELINS D'UN RUN INTERROMPU (jamais renommés) — 1\n------------------------------------------------------------------------------\n__rename_tmp_x.jpg\n\n\n==============================================================================\nRÉSULTATS — 2026-01-02 03:04:05\n==============================================================================\nRenommés avec succès : 3\n\n"
+
+
+def test_sortie_de_reference_complete(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(corr, "datetime", _DateFigee)
+    r = tmp_path / "racine"
+    (r / "album").mkdir(parents=True)
+    for n in ["a.JPG.JPG", "a.JPG.JPG.xmp", "c.XLSX", "d.jpg", "Notes.IMPORTANT",
+              "__rename_tmp_x.jpg", "rename_log_vieux.txt"]:
+        touch(r / n, b"x")
+    touch(r / "album" / "IMG.2024.JPG.JPG", b"x")
+    (r / ".cache").mkdir()
+    (r / "Library").mkdir()
+    (r / "lien").symlink_to(r / "a.JPG.JPG")
+    j = tmp_path / "rename_log_test.txt"
+    monkeypatch.setattr(corr, "choisir_journal", lambda x: (j, True))
+    monkeypatch.setattr("sys.argv", ["prog", str(r), "--oui"])
+    assert corr.main() == 0
+    ecran = capsys.readouterr().out.replace(str(r), "<RACINE>").replace(str(j), "<JOURNAL>")
+    assert ecran == ECRAN_COMPLET
+    assert j.read_text(encoding="utf-8").replace(str(r), "<RACINE>") + "\n" == JOURNAL_COMPLET
+
+
+ECRAN_REPLI = "🔎 Analyse des noms de fichiers sous : <RACINE>\n   (lecture seule, le contenu des fichiers n'est jamais ouvert)\n\n📁 Racine                  : <RACINE>\n🔧 À corriger              : 3\n✅ Déjà corrects           : 0\n📝 Liste complète (journal): <JOURNAL>\n\nRenommages prévus :\n----------------------------------------------------------------------\n  a.JPG.JPG\n      → a.jpg\n  b.ZIP.ZIP\n      → b.zip\n  erreur.PDF.PDF\n      → erreur.pdf\n\n✅ Terminé. 1 fichier(s) renommé(s).\n⚠️  Système de fichiers sans renommage atomique (exFAT / partage réseau) : la garantie anti-écrasement a reposé sur un test d'existence, non atomique.\n⏭️  1 ignoré(s) par prudence (état changé depuis le scan ; détails dans le journal).\n❌ 1 erreur(s) (détails dans le journal).\n📝 Journal complet : <JOURNAL>\n"
+
+RESULTATS_REPLI = " — 2026-01-02 03:04:05\n==============================================================================\nRenommés avec succès : 1\n\n⚠️  Système de fichiers sans renommage atomique (exFAT / partage réseau) : la garantie anti-écrasement a reposé sur un test d'existence, non atomique.\n\nIGNORÉS (état changé depuis le scan, par prudence) — 1\n------------------------------------------------------------------------------\nb.ZIP.ZIP : cible occupée depuis le scan\n\nERREURS — 1\n------------------------------------------------------------------------------\nerreur.PDF.PDF : [Errno 5] Input/output error: '<RACINE>/erreur.pdf'\n"
+
+
+class _FauxLibcSansAtomique:
+    """renameat2 refusé comme sur exFAT (ENOTSUP), sauf « erreur* » qui échoue (EIO)."""
+
+    def renameat2(self, a, src, b, dst, drapeaux):
+        ctypes.set_errno(errno.EIO if b"erreur" in dst else errno.ENOTSUP)
+        return -1
+
+
+def test_sortie_de_reference_repli_ignore_erreur(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(corr, "datetime", _DateFigee)
+    monkeypatch.setattr(corr, "_LIBC", _FauxLibcSansAtomique())
+    monkeypatch.setattr(corr.sys, "platform", "linux")
+    r = tmp_path / "racine"
+    r.mkdir()
+    for n in ["a.JPG.JPG", "b.ZIP.ZIP", "erreur.PDF.PDF"]:
+        touch(r / n, b"x")
+    vrai = corr.appliquer
+
+    def cible_apparue(modifs):
+        touch(r / "b.zip", b"apparu")
+        return vrai(modifs)
+
+    monkeypatch.setattr(corr, "appliquer", cible_apparue)
+    j = tmp_path / "rename_log_test.txt"
+    monkeypatch.setattr(corr, "choisir_journal", lambda x: (j, False))
+    monkeypatch.setattr("sys.argv", ["prog", str(r), "--oui"])
+    assert corr.main() == 1
+    ecran = capsys.readouterr().out.replace(str(r), "<RACINE>").replace(str(j), "<JOURNAL>")
+    assert ecran == ECRAN_REPLI
+    resultats = j.read_text(encoding="utf-8").split("RÉSULTATS", 1)[1].replace(str(r), "<RACINE>")
+    assert resultats == RESULTATS_REPLI
+    assert noms(r) == ["a.jpg", "b.ZIP.ZIP", "b.zip", "erreur.PDF.PDF"]
+    assert (r / "b.zip").read_bytes() == b"apparu"
+
+
+
+# ---------------------------------------------------------------------------
+# Comblement de la passe de mutation (réponse PO 6a) : chaque test ferme un trou relevé
+# ---------------------------------------------------------------------------
+
+def test_suffixe_au_dela_de_2(tmp_path):
+    touch(tmp_path / "a.JPG", b"source")
+    touch(tmp_path / "a.jpg", b"un")
+    touch(tmp_path / "a_2.jpg", b"deux")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 1
+    assert (tmp_path / "a_3.jpg").read_bytes() == b"source"
+    assert len(noms(tmp_path)) == 3
+
+
+def _beaucoup(racine, n):
+    racine.mkdir()
+    for i in range(n):
+        touch(racine / f"f{i:03d}.JPG")
+
+
+@pytest.mark.parametrize("n,options,attendu_lignes,tronque", [
+    (corr.SEUIL_APERCU + 1, (), 40, True),
+    (corr.SEUIL_APERCU, (), corr.SEUIL_APERCU, False),
+    (corr.SEUIL_APERCU + 1, ("--tout",), corr.SEUIL_APERCU + 1, False),
+])
+def test_apercu_tronque_ou_integral(tmp_path, monkeypatch, capsys, n, options, attendu_lignes, tronque):
+    racine = tmp_path / "racine"
+    _beaucoup(racine, n)
+    journal = tmp_path / "rename_log_test.txt"
+    assert _lancer_main(racine, journal, monkeypatch, "--dry-run", *options) == 0
+    sortie = capsys.readouterr().out
+    assert len([l for l in sortie.splitlines() if l.startswith("      → f")]) == attendu_lignes
+    if tronque:
+        assert f"  … +{n - 40} autre(s) non affichés ici." in sortie
+        assert "  Liste intégrale dans le journal ci-dessus (ouvre-le pour tout vérifier)." in sortie
+        assert "  (Relance avec --tout pour tout afficher à l'écran.)" in sortie
+    else:
+        assert "autre(s) non affichés" not in sortie
+
+
+def test_journal_impossible_a_ecrire_liste_integrale(tmp_path, monkeypatch, capsys):
+    racine = tmp_path / "racine"
+    _beaucoup(racine, corr.SEUIL_APERCU + 1)
+
+    def echoue(*a, **k):
+        raise OSError(errno.ENOSPC, "plus de place")
+
+    monkeypatch.setattr(corr, "ecrire_journal_prevu", echoue)
+    assert _lancer_main(racine, tmp_path / "j.txt", monkeypatch, "--dry-run") == 0
+    sortie = capsys.readouterr().out
+    assert "⚠️  Journal non écrit ([Errno 28] plus de place) ; liste affichée en entier ci-dessous." in sortie
+    assert "📝 Journal non écrit (aucun emplacement hors racine) : liste affichée en entier ci-dessous." in sortie
+    assert len([l for l in sortie.splitlines() if l.startswith("      → f")]) == corr.SEUIL_APERCU + 1
+
+
+def test_messages_rien_a_faire_et_dry_run(tmp_path, monkeypatch, capsys):
+    touch(tmp_path / "ok.jpg")
+    assert _lancer_main(tmp_path, None, monkeypatch, "--oui") == 0
+    assert "\n✅ Aucune extension à corriger. Rien à faire.\n" in capsys.readouterr().out
+    touch(tmp_path / "a.JPG.JPG")
+    assert _lancer_main(tmp_path, None, monkeypatch, "--dry-run") == 0
+    assert "\n🧪 --dry-run : liste affichée, aucune modification effectuée.\n" in capsys.readouterr().out
+
+
+def test_messages_refus_et_dossier_invalide(tmp_path, monkeypatch, capsys):
+    paquet = tmp_path / "X.app"
+    paquet.mkdir()
+    monkeypatch.setattr("sys.argv", ["prog", str(paquet)])
+    with pytest.raises(SystemExit) as fin:
+        corr.main()
+    assert fin.value.code == 1
+    sortie = capsys.readouterr().out
+    assert f"⛔ Refus : « {paquet} » est un emplacement protégé (système, paquet macOS ou corbeille).\n" in sortie
+    assert "   Vise un dossier de données (ex. ~/Pictures, ~/Movies, /Volumes/TonArchive).\n" in sortie
+    monkeypatch.setattr("sys.argv", ["prog", str(tmp_path / "absent")])
+    with pytest.raises(SystemExit) as fin:
+        corr.main()
+    assert fin.value.code == 1
+    assert f"❌ Dossier introuvable ou invalide : {tmp_path / 'absent'}\n" in capsys.readouterr().out
+
+
+def test_message_usage(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["prog", "a", "b"])
+    with pytest.raises(SystemExit):
+        corr.main()
+    assert "Usage : python3 corriger_extensions.py <dossier> [--dry-run] [--tout] [--oui]\n" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("option", ["-h", "--help"])
+def test_aide(monkeypatch, capsys, option):
+    monkeypatch.setattr("sys.argv", ["prog", option])
+    with pytest.raises(SystemExit) as fin:
+        corr.main()
+    assert fin.value.code == 0
+    assert capsys.readouterr().out == corr.__doc__ + "\n"
+
+
+def test_option_yes(tmp_path, monkeypatch):
+    touch(tmp_path / "a.JPG.JPG")
+    monkeypatch.setattr("sys.stdin", _StdinPasTTY())
+    assert _lancer_main(tmp_path, None, monkeypatch, "--yes") == 0
+    assert noms(tmp_path) == ["a.jpg"]
+
+
+@pytest.mark.parametrize("reponse", ["y", "yes", "YES", " O "])
+def test_confirmation_autres_oui(monkeypatch, reponse):
+    monkeypatch.setattr("sys.stdin", _StdinTTY())
+    monkeypatch.setattr("builtins.input", lambda invite="": reponse)
+    assert corr.demander_confirmation(3) is True
+
+
+@pytest.mark.parametrize("exception", [EOFError, KeyboardInterrupt])
+def test_confirmation_ctrl_d_ou_ctrl_c(monkeypatch, capsys, exception):
+    monkeypatch.setattr("sys.stdin", _StdinTTY())
+
+    def leve(invite=""):
+        raise exception
+
+    monkeypatch.setattr("builtins.input", leve)
+    assert corr.demander_confirmation(3) is False
+    assert "\nAnnulé.\n" in capsys.readouterr().out
+
+
+def test_confirmation_texte(monkeypatch, capsys):
+    vus = []
+    monkeypatch.setattr("sys.stdin", _StdinTTY())
+    monkeypatch.setattr("builtins.input", lambda invite="": vus.append(invite) or "n")
+    assert corr.demander_confirmation(7) is False
+    assert vus == ["\n➡️  Appliquer ces 7 renommage(s) ? [o/N] "]
+    monkeypatch.setattr("sys.stdin", _StdinPasTTY())
+    assert corr.demander_confirmation(7) is False
+    sortie = capsys.readouterr().out
+    assert "\n⏸️  Entrée non interactive : aucune modification effectuée.\n" in sortie
+    assert "   (Pour appliquer sans invite, relance avec --oui.)\n" in sortie
+
+
+def test_main_confirmation_refusee_message(tmp_path, monkeypatch, capsys):
+    touch(tmp_path / "a.JPG.JPG")
+    monkeypatch.setattr("sys.stdin", _StdinTTY())
+    monkeypatch.setattr("builtins.input", lambda invite="": "")
+    assert _lancer_main(tmp_path, None, monkeypatch) == 0
+    assert "✋ Aucune modification effectuée.\n" in capsys.readouterr().out
+
+
+def test_message_interruption(tmp_path, monkeypatch, capsys):
+    for i in range(5):
+        touch(tmp_path / f"f{i}.JPG")
+    vrai = corr._rename_no_overwrite
+    appels = []
+
+    def coupe(src, dst):
+        appels.append(src)
+        if len(appels) == 3:
+            raise KeyboardInterrupt
+        return vrai(src, dst)
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", coupe)
+    j = tmp_path.parent / f"j-{tmp_path.name}.txt"
+    with pytest.raises(SystemExit) as fin:
+        _lancer_main(tmp_path, j, monkeypatch, "--oui")
+    assert fin.value.code == 130
+    sortie = capsys.readouterr().out
+    assert ("\n⛔ Interrompu (Ctrl-C) après 2 fichier(s) traité(s) sur 5 (2 renommé(s)) ; "
+            "les suivants n'ont pas été touchés.\n") in sortie
+    assert f"📝 Journal complet : {j}\n" in sortie
+    assert "INTERROMPU (Ctrl-C) après 2 fichier(s) traité(s) sur 5" in j.read_text(encoding="utf-8")
+
+
+def test_source_disparue_ignoree(tmp_path):
+    touch(tmp_path / "a.JPG.JPG")
+    modifs = corr.scanner(tmp_path)[0]
+    (tmp_path / "a.JPG.JPG").unlink()
+    renommes, ignores, erreurs, _ = corr.appliquer(modifs)
+    assert (renommes, ignores, erreurs) == (0, [("a.JPG.JPG", "source disparue ou devenue un lien")], [])
+
+
+def test_raisons_exactes_par_chemin(tmp_path, monkeypatch):
+    a = touch(tmp_path / "a.JPG")
+    b = touch(tmp_path / "b.JPG")
+    c = touch(tmp_path / "c.JPG")
+    d = touch(tmp_path / "d.ZIP.ZIP")
+    modifs = [forge(a, "a.jpg", True, tmp_path), forge(b, "b.jpg", True, tmp_path),
+              forge(c, "c.jpg", True, tmp_path), forge(d, "d.zip", False, tmp_path)]
+    vrai = corr._rename_no_overwrite
+
+    def selon_le_nom(src, dst):
+        if dst.endswith("/a.jpg"):
+            raise FileExistsError(errno.EEXIST, "occupé", dst)
+        if dst.endswith("/b.jpg"):
+            raise OSError(errno.EIO, "étape 2", dst)
+        if dst.endswith(f"{corr.PREFIXE_TMP}c.jpg"):
+            raise OSError(errno.EIO, "étape 1", dst)
+        if dst.endswith("/d.zip"):
+            raise OSError(errno.EIO, "direct", dst)
+        return vrai(src, dst)
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", selon_le_nom)
+    renommes, ignores, erreurs, _ = corr.appliquer(modifs)
+    assert renommes == 0
+    assert ignores == [("a.JPG", "cible occupée (lien dur / apparue depuis le scan)")]
+    assert erreurs == [
+        ("b.JPG", f"[Errno 5] étape 2: '{tmp_path / 'b.jpg'}'"),
+        ("c.JPG", f"[Errno 5] étape 1: '{tmp_path / (corr.PREFIXE_TMP + 'c.jpg')}'"),
+        ("d.ZIP.ZIP", f"[Errno 5] direct: '{tmp_path / 'd.zip'}'"),
+    ]
+    assert noms(tmp_path) == ["a.JPG", "b.JPG", "c.JPG", "d.ZIP.ZIP"]
+
+
+def test_cible_occupee_ignoree_chemin_direct(tmp_path):
+    touch(tmp_path / "d.ZIP.ZIP", b"source")
+    modifs = corr.scanner(tmp_path)[0]
+    touch(tmp_path / "d.zip", b"apparu")
+    renommes, ignores, erreurs, _ = corr.appliquer(modifs)
+    assert (renommes, ignores, erreurs) == (0, [("d.ZIP.ZIP", "cible occupée depuis le scan")], [])
+
+
+@pytest.mark.parametrize("case_safe", [True, False])
+def test_repli_garde_en_memoire_sur_tout_le_lot(tmp_path, monkeypatch, case_safe):
+    fichiers = [touch(tmp_path / f"{x}.JPG") for x in "ab"]
+    modifs = [forge(f, f.name.replace(".JPG", ".jpg"), case_safe, tmp_path) for f in fichiers]
+    vrai = corr._rename_no_overwrite
+    appels = []
+
+    def repli_au_premier_appel(src, dst):
+        appels.append(src)
+        vrai(src, dst)
+        return len(appels) == 1
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", repli_au_premier_appel)
+    renommes, _, erreurs, repli = corr.appliquer(modifs)
+    assert renommes == 2 and erreurs == [] and repli is True
+    assert noms(tmp_path) == ["a.jpg", "b.jpg"]
+
+
+def test_casse_nom_temporaire_dans_le_meme_dossier(tmp_path, monkeypatch):
+    src = touch(tmp_path / "a.JPG")
+    vus = []
+    vrai = corr._rename_no_overwrite
+
+    def espion(s, d):
+        vus.append((s, d))
+        return vrai(s, d)
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", espion)
+    corr.appliquer([forge(src, "a.jpg", True, tmp_path)])
+    temp = str(tmp_path / f"{corr.PREFIXE_TMP}a.jpg")
+    assert vus == [(str(src), temp), (temp, str(tmp_path / "a.jpg"))]
+
+
+def test_vraie_detection_du_repli_errno(tmp_path, monkeypatch):
+    for code in (errno.ENOTSUP, errno.EINVAL, errno.ENOSYS):
+        class Refus:
+            def renameat2(self, *a):
+                ctypes.set_errno(code)
+                return -1
+        monkeypatch.setattr(corr, "_LIBC", Refus())
+        monkeypatch.setattr(corr.sys, "platform", "linux")
+        nom = f"f{code}.ZIP.ZIP"
+        touch(tmp_path / nom)
+        r = scan_apply(tmp_path)
+        assert r["renommes"] == 1 and r["repli"] is True and r["erreurs"] == []
+        assert (tmp_path / f"f{code}.zip").exists()
+
+
+def test_choisir_journal_meme_volume_annonce(tmp_path, monkeypatch):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    ailleurs = tmp_path / "ailleurs"
+    ailleurs.mkdir()
+    monkeypatch.chdir(ailleurs)
+    monkeypatch.setenv("HOME", str(ailleurs))
+    monkeypatch.setattr(corr.tempfile, "tempdir", str(ailleurs))
+    journal, meme_volume = corr.choisir_journal(racine.resolve())
+    assert journal is not None and journal.parent == ailleurs.resolve() and meme_volume is True
+
+
+def test_main_journal_reel_hors_racine(tmp_path, monkeypatch):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    touch(racine / "a.JPG.JPG")
+    ailleurs = tmp_path / "ailleurs"
+    ailleurs.mkdir()
+    monkeypatch.chdir(ailleurs)
+    monkeypatch.setenv("HOME", str(ailleurs))
+    monkeypatch.setattr(corr.tempfile, "tempdir", str(ailleurs))
+    monkeypatch.setattr("sys.argv", ["prog", str(racine), "--oui"])
+    assert corr.main() == 0
+    journaux = [n for n in os.listdir(ailleurs) if n.startswith("rename_log_")]
+    assert len(journaux) == 1 and "a.JPG.JPG" in (ailleurs / journaux[0]).read_text(encoding="utf-8")
+    assert noms(racine) == ["a.jpg"]
+
+
+def test_date_non_remise_apres_interruption_signalee(tmp_path, monkeypatch):
+    for i in range(2):
+        touch(tmp_path / f"f{i}.JPG")
+    modifs = corr.scanner(tmp_path)[0]
+    vrai = corr._rename_no_overwrite
+    appels = []
+
+    def coupe(src, dst):
+        appels.append(src)
+        if len(appels) == 2:
+            raise KeyboardInterrupt
+        return vrai(src, dst)
+
+    def refuse(*a, **k):
+        raise PermissionError(errno.EPERM, "refusé")
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", coupe)
+    monkeypatch.setattr(corr.os, "utime", refuse)
+    with pytest.raises(corr.Interrompu) as interruption:
+        corr.appliquer(modifs)
+    erreurs = interruption.value.resultats[2]
+    assert len(erreurs) == 1 and "date du dossier non remise" in erreurs[0][1]
+
+
+def test_deux_renommages_de_casse_comptes(tmp_path):
+    modifs = [forge(touch(tmp_path / f"{x}.JPG"), f"{x}.jpg", True, tmp_path) for x in "ab"]
+    renommes, _, erreurs, _ = corr.appliquer(modifs)
+    assert renommes == 2 and erreurs == []
