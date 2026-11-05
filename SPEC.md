@@ -8,7 +8,7 @@
 
 Corrige le **NOM** des fichiers dont l'extension est **dupliquée** et/ou en **majuscules**, cassée par de mauvais transferts : `photo.JPG.JPG → photo.jpg`, `clip.MP4.MP4.MP4 → clip.mp4`. Il ne fait QUE ça : pure lecture des noms + renommage. Il ne lit **jamais** le contenu, ne déplace rien, ne supprime rien, ne vérifie pas si l'extension « correspond » au format réel.
 
-Pour qui : moi, pour assainir des archives photo/vidéo après transferts foireux, **sans le moindre risque pour les données ni les dates**. État actuel : v4.0.0, marqué « Définitif », licence MIT.
+Pour qui : moi, pour assainir toutes mes archives après transferts foireux, quel que soit le type de fichiers (pas seulement photo/vidéo), **sans le moindre risque pour les données ni les dates**. État actuel : v4.1.0, « Définitif — correctifs de sûreté », licence MIT.
 
 **Domaines sensibles** : **fichiers** (entrées de répertoire, inode, collisions de noms, casse de système de fichiers insensible à la casse comme APFS par défaut).
 
