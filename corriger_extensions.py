@@ -527,7 +527,8 @@ def compagnons(modifs, laisses) -> list:
     return sorted(set(trouves))
 
 
-_INVERSIONS_DE_SENS = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A))
+_INVERSIONS_DE_SENS = (set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A))
+                       | {0x061C, 0x200E, 0x200F, 0x2028, 0x2029})   # marques de sens, sauts de ligne Unicode
 _ECHAPPEMENTS = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
 
 
@@ -623,6 +624,16 @@ def _remettre_dates(dates: dict, erreurs) -> None:
             erreurs.append((dossier, f"date du dossier non remise : {e}"))
 
 
+def _retour_arriere(temp: Path, src: Path, m: Modif, erreurs) -> bool:
+    """Remet le fichier sous son nom d'origine ; un échec (disque débranché) est consigné."""
+    try:
+        os.rename(str(temp), str(src))
+        return True
+    except OSError as e:
+        erreurs.append((m.rel, f"retour arrière impossible, fichier resté sous {temp.name} : {e}"))
+        return False
+
+
 def _appliquer_un(m: Modif, renommes: int, ignores, erreurs, repli: bool):
     src = Path(m.src)
     cible = Path(m.cible)
@@ -653,12 +664,12 @@ def _appliquer_un(m: Modif, renommes: int, ignores, erreurs, repli: bool):
         try:
             repli |= _rename_no_overwrite(str(temp), str(cible))     # étape 2
         except FileExistsError:
-            os.rename(str(temp), str(src))                          # rollback, abstention
-            ignores.append((m.rel, "cible occupée (lien dur / apparue depuis le scan)"))
+            if _retour_arriere(temp, src, m, erreurs):
+                ignores.append((m.rel, "cible occupée (lien dur / apparue depuis le scan)"))
             return renommes, repli
         except OSError as e:
-            os.rename(str(temp), str(src))                          # rollback, erreur
             erreurs.append((m.rel, str(e)))
+            _retour_arriere(temp, src, m, erreurs)
             return renommes, repli
         except BaseException:
             # Ctrl-C / SIGINT entre les deux étapes : on restaure avant de remonter.

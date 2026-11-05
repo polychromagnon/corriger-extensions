@@ -1875,3 +1875,171 @@ def test_compagnon_lightroom_radical_a_points(tmp_path):
     modifs = corr.scanner(tmp_path, laisses)[0]
     assert corr.compagnons(modifs, laisses) == [
         ("y.2024.JPG.xmp", "y.2024.JPG.JPG", "compagnon Lightroom (même radical)")]
+
+
+# ---------------------------------------------------------------------------
+# Chemins d'erreur rares (course, disque débranché), éprouvés par injection
+# ---------------------------------------------------------------------------
+
+class _EntreeQuiEchoue:
+    def __init__(self, vraie, methode):
+        self._vraie, self._methode = vraie, methode
+        self.name, self.path = vraie.name, vraie.path
+
+    def __getattr__(self, nom):
+        if nom == self._methode:
+            def echoue(*a, **k):
+                raise PermissionError(errno.EACCES, "refusé", self.path)
+            return echoue
+        return getattr(self._vraie, nom)
+
+
+def _scandir_qui_echoue(monkeypatch, nom_vise, methode):
+    vrai = os.scandir
+
+    class Contexte:
+        def __init__(self, chemin):
+            with vrai(chemin) as it:
+                self.entrees = [_EntreeQuiEchoue(e, methode) if e.name == nom_vise else e for e in it]
+
+        def __enter__(self):
+            return iter(self.entrees)
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(corr.os, "scandir", Contexte)
+
+
+@pytest.mark.parametrize("methode", ["stat", "is_dir", "is_symlink"])
+def test_entree_illisible_ne_stoppe_pas_le_dossier(tmp_path, monkeypatch, methode):
+    for n in ["a.JPG.JPG", "b.ZIP.ZIP", "c.XLSX"]:
+        touch(tmp_path / n)
+    _scandir_qui_echoue(monkeypatch, "a.JPG.JPG", methode)
+    modifs, _, erreurs_acces, _ = corr.scanner(tmp_path)
+    assert [m.rel for m in modifs] == ["b.ZIP.ZIP", "c.XLSX"]
+    assert erreurs_acces == [f"[Errno 13] refusé: '{tmp_path / 'a.JPG.JPG'}'"]
+
+
+def test_compagnons_dossier_disparu(tmp_path, monkeypatch):
+    touch(tmp_path / "a.JPG.JPG")
+    modifs = corr.scanner(tmp_path)[0]
+
+    def disparu(chemin):
+        raise FileNotFoundError(errno.ENOENT, "disparu", chemin)
+
+    monkeypatch.setattr(corr.os, "listdir", disparu)
+    assert corr.compagnons(modifs, []) == []
+
+
+def test_source_illisible_au_moment_d_appliquer(tmp_path, monkeypatch):
+    src = touch(tmp_path / "a.JPG.JPG")
+    modifs = corr.scanner(tmp_path)[0]
+    vrai = Path.stat
+
+    def stat(self, *a, **k):
+        if self == src:
+            raise PermissionError(errno.EACCES, "refusé", str(self))
+        return vrai(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    renommes, ignores, erreurs, _ = corr.appliquer(modifs)
+    assert (renommes, ignores) == (0, [])
+    assert erreurs == [("a.JPG.JPG", f"[Errno 13] refusé: '{src}'")]
+
+
+def test_meme_fichier_cible_absente():
+    assert corr.meme_fichier(Path("/"), Path("/nulle-part-absent")) is False
+
+
+def test_est_sous_racine_ou_parent_illisibles(tmp_path, monkeypatch):
+    assert corr._est_sous(tmp_path, tmp_path / "absente") is False
+    racine = tmp_path / "racine"
+    (racine / "x" / "y").mkdir(parents=True)
+    vrai = Path.stat
+
+    def stat(self, *a, **k):
+        if self == racine / "x" / "y":
+            raise PermissionError(errno.EACCES, "refusé")
+        return vrai(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    assert corr._est_sous(racine / "x" / "y", racine) is True
+
+
+@pytest.mark.parametrize("panne", ["resolve", "stat"])
+def test_choisir_journal_candidat_en_panne_passe_au_suivant(tmp_path, monkeypatch, panne):
+    racine = tmp_path / "racine"
+    racine.mkdir()
+    cwd = tmp_path / "cwd"
+    home = tmp_path / "home"
+    for d in (cwd, home):
+        d.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(corr.tempfile, "tempdir", str(home))
+    vrai = getattr(Path, panne)
+    en_echec = {str(cwd), str(cwd.resolve())}
+
+    def en_panne(self, *a, **k):
+        if str(self) in en_echec:
+            raise PermissionError(errno.EACCES, "refusé")
+        return vrai(self, *a, **k)
+
+    monkeypatch.setattr(Path, panne, en_panne)
+    journal, _ = corr.choisir_journal(racine.resolve())
+    assert journal is not None and journal.parent == home.resolve()
+
+
+def test_retour_arriere_impossible_consigne(tmp_path, monkeypatch):
+    src = touch(tmp_path / "a.JPG", b"photo")
+    vrai_rename = os.rename
+
+    def etape_2_puis_debranche(s, d):
+        if d.endswith("/a.jpg"):
+            raise OSError(errno.EIO, "disque débranché", d)
+        return vrai_rename(s, d)
+
+    monkeypatch.setattr(corr, "_rename_no_overwrite", lambda s, d: etape_2_puis_debranche(s, d) or False)
+
+    def rename_refuse(s, d):
+        raise OSError(errno.ENODEV, "plus de disque", s)
+
+    monkeypatch.setattr(corr.os, "rename", rename_refuse)
+    renommes, ignores, erreurs, _ = corr.appliquer([forge(src, "a.jpg", True, tmp_path)])
+    temp = f"{corr.PREFIXE_TMP}a.jpg"
+    assert renommes == 0 and ignores == []
+    assert erreurs[0] == ("a.JPG", f"[Errno 5] disque débranché: '{tmp_path / 'a.jpg'}'")
+    assert erreurs[1][0] == "a.JPG" and erreurs[1][1].startswith(
+        f"retour arrière impossible, fichier resté sous {temp} : [Errno 19] plus de disque")
+    assert (tmp_path / temp).read_bytes() == b"photo"
+
+
+def test_lot_insensible_a_la_casse_suffixe(tmp_path):
+    touch(tmp_path / "X.jpg.jpg", b"un")
+    touch(tmp_path / "x.JPG", b"deux")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 2 and r["ignores"] == []
+    assert noms(tmp_path) == ["X.jpg", "x_2.jpg"]
+
+
+def test_doublon_vers_un_lien_dur_suffixe(tmp_path):
+    touch(tmp_path / "x.jpg", b"contenu")
+    os.link(tmp_path / "x.jpg", tmp_path / "x.JPG.JPG")
+    r = scan_apply(tmp_path)
+    assert r["renommes"] == 1
+    assert noms(tmp_path) == ["x.jpg", "x_2.jpg"]
+
+
+def test_date_d_acces_du_dossier_remise_aussi(tmp_path):
+    touch(tmp_path / "a.JPG.JPG")
+    modifs = corr.scanner(tmp_path)[0]
+    os.utime(tmp_path, ns=(1_000_000_000_000_000_000, 1_546_300_800_000_000_000))
+    corr.appliquer(modifs)
+    st = os.stat(tmp_path)
+    assert (st.st_atime_ns, st.st_mtime_ns) == (1_000_000_000_000_000_000, 1_546_300_800_000_000_000)
+
+
+@pytest.mark.parametrize("marque", [" ", " ", "‎", "‏", "؜"])
+def test_autres_marques_de_sens_echappees(marque):
+    assert corr._lisible(f"a{marque}b") == f"a\\u{ord(marque):04x}b"
