@@ -603,7 +603,7 @@ def appliquer(modifs: list[Modif]):
                 traites += 1
         except KeyboardInterrupt:
             signum = signal.SIGINT
-        _remettre_dates(dates, erreurs)
+        _remettre_dates(dates, erreurs, ignores)
         if signum is None:
             signum = _signal_en_attente()
     finally:
@@ -626,24 +626,32 @@ def _signal_en_attente():
 
 
 def _dates_des_dossiers(modifs) -> dict:
-    """Dates (accès, modification) des dossiers touchés, relevées avant tout renommage."""
+    """Dates (accès, modification, création si connue) des dossiers touchés, avant tout renommage."""
     dates = {}
     for m in modifs:
         dossier = os.path.dirname(m.src)
         if dossier not in dates:
             try:
                 st = os.stat(dossier)
-                dates[dossier] = (st.st_atime_ns, st.st_mtime_ns)
+                dates[dossier] = (st.st_atime_ns, st.st_mtime_ns, getattr(st, "st_birthtime", None))
             except OSError:
                 pass
     return dates
 
 
-def _remettre_dates(dates: dict, erreurs) -> None:
-    """Renommer change la date de modification du dossier : on remet celle d'avant."""
-    for dossier, ns in dates.items():
+def _remettre_dates(dates: dict, erreurs, ignores) -> None:
+    """Renommer change la date de modification du dossier : on remet celle d'avant.
+
+    Sauf si elle est antérieure à la création du dossier (copie par rsync -a, restauration) :
+    sur macOS, la remettre ferait reculer la date de création (HFS+, hfs_vnops.c).
+    """
+    for dossier, (acces, modif, creation) in dates.items():
+        if creation is not None and modif < creation * 1_000_000_000:
+            ignores.append((dossier, "date du dossier non remise par prudence : sa date de modification "
+                                     "d'origine précède sa création, la remettre ferait reculer sa date de création"))
+            continue
         try:
-            os.utime(dossier, ns=ns)
+            os.utime(dossier, ns=(acces, modif))
         except OSError as e:
             erreurs.append((dossier, f"date du dossier non remise : {e}"))
 

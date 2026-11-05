@@ -2186,3 +2186,83 @@ def test_repli_lien_casse_sur_la_cible_jamais_ecrase(tmp_path, monkeypatch):
     renommes, ignores, _, _ = corr.appliquer(modifs)
     assert renommes == 0 and len(ignores) == 1
     assert os.path.islink(tmp_path / "a.jpg") and (tmp_path / "a.JPG.JPG").read_bytes() == b"source"
+
+
+# ---------------------------------------------------------------------------
+# Date de création des dossiers jamais reculée (attaque 4, cycle 2)
+# ---------------------------------------------------------------------------
+
+class _StatAvecCreation:
+    def __init__(self, vrai, creation):
+        self._vrai, self.st_birthtime = vrai, creation
+
+    def __getattr__(self, nom):
+        return getattr(self._vrai, nom)
+
+
+def _avec_date_de_creation(monkeypatch, dossier, creation):
+    vrai = os.stat
+
+    def stat(chemin, *a, **k):
+        st = vrai(chemin, *a, **k)
+        return _StatAvecCreation(st, creation) if str(chemin) == str(dossier) else st
+
+    monkeypatch.setattr(corr.os, "stat", stat)
+
+
+def test_date_de_dossier_anterieure_a_sa_creation_non_remise(tmp_path, monkeypatch):
+    touch(tmp_path / "a.JPG.JPG")
+    modifs = corr.scanner(tmp_path)[0]
+    _dater(tmp_path, 1_546_300_800)                        # modification : 2019
+    _avec_date_de_creation(monkeypatch, tmp_path, 1_700_000_000.0)   # création : 2023
+    renommes, ignores, erreurs, _ = corr.appliquer(modifs)
+    assert renommes == 1 and erreurs == []
+    assert ignores == [(str(tmp_path), "date du dossier non remise par prudence : sa date de modification "
+                                       "d'origine précède sa création, la remettre ferait reculer sa date de création")]
+    assert os.stat(tmp_path).st_mtime_ns != 1_546_300_800 * 1_000_000_000
+
+
+def test_date_de_dossier_posterieure_a_sa_creation_remise(tmp_path, monkeypatch):
+    touch(tmp_path / "a.JPG.JPG")
+    modifs = corr.scanner(tmp_path)[0]
+    _dater(tmp_path, 1_546_300_800)
+    _avec_date_de_creation(monkeypatch, tmp_path, 1_500_000_000.0)   # création : 2017
+    renommes, ignores, erreurs, _ = corr.appliquer(modifs)
+    assert (renommes, ignores, erreurs) == (1, [], [])
+    assert os.stat(tmp_path).st_mtime_ns == 1_546_300_800 * 1_000_000_000
+
+
+def test_source_devenue_un_lien_ignoree(tmp_path):
+    touch(tmp_path / "a.JPG.JPG", b"source")
+    touch(tmp_path / "autre", b"autre")
+    modifs = corr.scanner(tmp_path)[0]
+    (tmp_path / "a.JPG.JPG").unlink()
+    (tmp_path / "a.JPG.JPG").symlink_to(tmp_path / "autre")
+    renommes, ignores, erreurs, _ = corr.appliquer(modifs)
+    assert (renommes, ignores, erreurs) == (0, [("a.JPG.JPG", "source disparue ou devenue un lien")], [])
+    assert os.path.islink(tmp_path / "a.JPG.JPG")
+
+
+def test_lot_insensible_a_la_casse_dossier_en_majuscules(tmp_path):
+    d = tmp_path / "ARCHIVE"
+    d.mkdir()
+    touch(d / "X.jpg.jpg", b"un")
+    touch(d / "x.JPG", b"deux")
+    r = scan_apply(d)
+    assert r["renommes"] == 2 and noms(d) == ["X.jpg", "x_2.jpg"]
+
+
+@pytest.mark.skipif(not os.path.isdir("/dev/shm"), reason="exige /dev/shm (volume distinct)")
+def test_journal_prefere_le_dossier_courant(tmp_path, monkeypatch):
+    racine = Path("/dev/shm") / f"corrext_ordre_{os.getpid()}"
+    racine.mkdir(exist_ok=True)
+    try:
+        cwd, home = tmp_path / "cwd", tmp_path / "home"
+        cwd.mkdir()
+        home.mkdir()
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("HOME", str(home))
+        journal, meme_volume = corr.choisir_journal(racine)
+        assert journal.parent == cwd.resolve() and meme_volume is False
+    finally:
+        racine.rmdir()

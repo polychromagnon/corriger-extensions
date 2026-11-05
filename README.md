@@ -18,7 +18,7 @@ Le contenu des fichiers n'est jamais ouvert ni lu. Rien n'est déplacé, rien n'
 
 ## Garantie d'intégrité des données et des dates
 
-Renommer, c'est modifier l'entrée de répertoire (le lien nom vers fichier), pas le fichier. Les octets de données, le mtime (date de modification), le birthtime (date de création Finder) et les attributs étendus (tags Finder) ne sont pas touchés. Sur le fichier, le seul horodatage que tout renommage POSIX met à jour est le ctime (« Attributs modifiés »), qui n'est pas affiché par le Finder et n'a aucun rapport avec les dates EXIF, lesquelles vivent dans le contenu jamais lu. Le dossier qui contient un fichier renommé voit sa date de modification passer à l'heure du renommage, comme pour tout renommage : l'outil relève les dates de chaque dossier touché avant d'agir et les remet ensuite, y compris après un Ctrl-C. Un dossier dont la date n'a pas pu être remise est signalé comme erreur. La « Date d'ajout » qu'affiche le Finder n'est pas vérifiée.
+Renommer, c'est modifier l'entrée de répertoire (le lien nom vers fichier), pas le fichier. Les octets de données, le mtime (date de modification), le birthtime (date de création Finder) et les attributs étendus (tags Finder) ne sont pas touchés. Sur le fichier, le seul horodatage que tout renommage POSIX met à jour est le ctime (« Attributs modifiés »), qui n'est pas affiché par le Finder et n'a aucun rapport avec les dates EXIF, lesquelles vivent dans le contenu jamais lu. Le dossier qui contient un fichier renommé voit sa date de modification passer à l'heure du renommage, comme pour tout renommage : l'outil relève les dates de chaque dossier touché avant d'agir et les remet ensuite, y compris après un Ctrl-C. Exception : sur Mac, un dossier dont la date de modification est antérieure à sa date de création (copie par `rsync -a`, restauration) garde la date de modification du renommage, car remettre l'ancienne ferait reculer sa date de création ; il est listé parmi les fichiers ignorés par prudence. Un dossier dont la date n'a pas pu être remise est signalé comme erreur. La « Date d'ajout » qu'affiche le Finder n'est pas vérifiée.
 
 Vérifié par les tests sur plateforme Linux : hash SHA-256 des octets inchangé, `st_mtime_ns` inchangé, attributs étendus `user.*` inchangés, inode inchangé, date de modification des dossiers touchés inchangée. Non vérifiable sur cette plateforme, donc à confirmer manuellement sous macOS : `st_birthtime` (absent de `os.stat` sous Linux) et les tags Finder.
 
@@ -85,8 +85,10 @@ python3 --version
 L'outil exige Python 3.9 ou plus récent.
 
 ```
-mkdir ~/Desktop/essai-corrext
+mkdir -p ~/Desktop/essai-corrext/ancien
 touch ~/Desktop/essai-corrext/{photo.JPG.JPG,clip.MP4,b.ZIP.ZIP,c.XLSX,version.1.1,Notes.IMPORTANT}
+touch ~/Desktop/essai-corrext/ancien/x.JPG.JPG
+touch -t 201901010000 ~/Desktop/essai-corrext/ancien
 ```
 
 Dans le Finder, mets une étiquette de couleur sur `photo.JPG.JPG` et sur `clip.MP4`. Puis :
@@ -100,4 +102,4 @@ stat -f '%N  créé %SB  modifié %Sm' ~/Desktop/essai-corrext ~/Desktop/essai-c
 mdls -name kMDItemDateAdded ~/Desktop/essai-corrext/*
 ```
 
-Attendu : aucune ligne d'erreur ; les fichiers s'appellent maintenant `photo.jpg`, `clip.mp4`, `b.zip`, `c.xlsx`, `version.1.1` et `Notes.IMPORTANT` ; les dates « créé » et « modifié » de chaque fichier, et la date « modifié » du dossier `essai-corrext`, sont les mêmes avant et après ; note si la « Date d'ajout » (`kMDItemDateAdded`) change ; les étiquettes sont toujours visibles dans le Finder. Même essai possible sur un disque externe exFAT en remplaçant `~/Desktop/essai-corrext` par un dossier de ce disque : l'outil y affiche alors l'avertissement de renommage non atomique. L'attente de 15 secondes compte : sur un disque FAT32, macOS Sonoma remet la date de modification d'un fichier renommé à l'heure courante quelques secondes après le renommage (fil Apple Developer Forums 759757, bug FB14464931, jugé régression par un ingénieur Apple) ; l'outil ne peut pas l'empêcher. exFAT n'y est pas testé : c'est ce que l'essai vérifie. Supprime le dossier d'essai ensuite.
+Attendu : aucune ligne d'erreur ; les fichiers s'appellent maintenant `photo.jpg`, `clip.mp4`, `b.zip`, `c.xlsx`, `version.1.1` et `Notes.IMPORTANT` ; les dates « créé » et « modifié » de chaque fichier, et la date « modifié » du dossier `essai-corrext`, sont les mêmes avant et après ; le dossier `ancien` (modifié en 2019, créé aujourd'hui) garde sa date « créé » et prend la date « modifié » du renommage ; note si la « Date d'ajout » (`kMDItemDateAdded`) change ; les étiquettes sont toujours visibles dans le Finder. Même essai possible sur un disque externe exFAT en remplaçant `~/Desktop/essai-corrext` par un dossier de ce disque : l'outil y affiche alors l'avertissement de renommage non atomique. L'attente de 15 secondes compte : sur un disque FAT32, macOS Sonoma remet la date de modification d'un fichier renommé à l'heure courante quelques secondes après le renommage (fil Apple Developer Forums 759757, bug FB14464931, jugé régression par un ingénieur Apple) ; l'outil ne peut pas l'empêcher. exFAT n'y est pas testé : c'est ce que l'essai vérifie. Supprime le dossier d'essai ensuite.
