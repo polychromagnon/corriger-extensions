@@ -25,11 +25,13 @@
 > Une décision par ligne : qui la pose, la question, la proposition de l'équipage, puis la flèche où tu réponds (un mot suffit : oui, non, un chiffre, un choix). Le prochain run lit ta réponse, l'applique, retire la ligne, et grave en section 1 ce qui mérite de durer. **Section vide : rien ne t'attend.** Tant qu'une ligne reste sans réponse, le SPEC n'est pas figé et rien ne part en production.
 
 
+- [Claude, 2026-11-05] La liste d'extensions connues (38 : photos, vidéos, audio, pdf, doc, docx, txt, rtf, aae) laisse tels quels tous les autres types : `b.ZIP.ZIP`, `c.XLSX`, `f.csv.csv` ne sont pas corrigés. Or tu as dit le 2026-11-05 que l'outil sert pour tous les fichiers. Proposition : élargir la liste aux formats courants (archives, bureautique, web, données). →
+
 ## 4. Décidé sans toi — à revoir
 
 > Une ligne par décision prise en ton absence : le choix, l'alternative écartée, la raison. Trois gestes possibles : tu la laisses (elle reste un défaut tacite), tu la graves en section 1 (elle devient loi), ou tu écris **NON** en fin de ligne (le prochain run la défait et repose la question en section 3).
 
-- Aucune nouvelle fonction ce cycle, dont la liste d'extensions connues, qui reste figée dans le script. Écarté : la rendre réglable. Raison : politique « sans nouvelle fonction » ; l'idée est au backlog. (SPEC, décisions de gel n°1 et 3)
+- Aucune nouvelle fonction ce cycle, dont la liste d'extensions connues, qui reste figée dans le script. Écarté : la rendre réglable. Raison : politique « sans nouvelle fonction » ; l'idée est au backlog. Décision prise avant que tu élargisses l'outil à tous les fichiers : voir la question en section 3. (SPEC, décisions de gel n°1 et 3)
 - `a.JPG.jpg` devient `a.jpg`. Écarté : le laisser tel quel. Raison : c'était déjà le comportement. (n°2)
 - Preuve « ce que tu vois est ce qui sera fait » : l'outil ne fait jamais rien hors de la liste montrée, mais peut en faire moins (abstention sur un cas douteux). Écarté : exiger qu'il fasse toute la liste. Raison : une abstention légitime rendrait cette preuve fausse. (n°4)
 - `IMG.2024.JPG.JPG` n'est corrigé que sur la casse (`IMG.2024.JPG.jpg`) : le doublon reste. Écarté : élargir la fusion. Raison : cela changerait le comportement sur des fichiers réels. (n°5)
@@ -41,7 +43,7 @@
 - Retour arrière d'un renommage de casse raté : prouvé par un test simulé, pas sur un vrai disque insensible à la casse comme celui de ton Mac. Raison : la VM n'a pas ce type de disque. (n°11)
 - Noms temporaires `__rename_tmp_*` : jamais laissés après un arrêt normal ou un Ctrl-C ; après une coupure de courant, signalés au lancement suivant. Écarté : promettre « jamais, quoi qu'il arrive ». Raison : aucun code ne survit à une coupure de courant. (n°12)
 - Disques sans renommage sûr (exFAT, partages réseau) : l'outil renomme quand même, avec un avertissement que la protection anti-écrasement y est moins forte. Écarté : refuser d'y travailler. Raison : l'outil serait inutilisable sur tes disques externes. (n°13)
-- Aucun journal n'a pu être écrit : la liste complète s'affiche d'office à l'écran. Écarté : bloquer, ou dispenser `--oui`. Raison : tu dois voir tout ce qui sera fait. (n°14)
+- Aucun journal n'a pu être écrit : la liste complète s'affiche d'office à l'écran. Écarté : bloquer, ou en dispenser le mode sans confirmation (`--oui`). Raison : tu dois voir tout ce qui sera fait. (n°14)
 
 ## 5. État du chantier
 
